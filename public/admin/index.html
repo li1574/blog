@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>发文后台 · li1574的blog</title>
+    <style>
+      :root {
+        --bg: #fdfdfd;
+        --panel: #ffffff;
+        --fg: #282728;
+        --muted: #6b7280;
+        --border: #e3e0e0;
+        --accent: #006cac;
+        --ok: #0f7b4f;
+        --err: #b42318;
+        --code: #f5f4f2;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #212737;
+          --panel: #2a3244;
+          --fg: #eaedf3;
+          --muted: #afb9ca;
+          --border: #3b465c;
+          --accent: #6fb3e0;
+          --ok: #6ee7a8;
+          --err: #ff8b8b;
+          --code: #1b2130;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.6 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 80px; }
+      header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+      h1 { font-size: 20px; margin: 0; font-weight: 500; }
+      header a { color: var(--muted); text-decoration: none; font-size: 13px; }
+      header a:hover { color: var(--accent); }
+      .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; }
+      .row > .field { flex: 1 1 200px; }
+      .field { margin-bottom: 14px; }
+      label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+      input[type="text"], input[type="password"], input[type="datetime-local"], textarea, select {
+        width: 100%;
+        padding: 9px 11px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+      }
+      textarea { resize: vertical; min-height: 320px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 13px; line-height: 1.7; }
+      input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+      .hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
+      .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      button {
+        font: inherit;
+        padding: 9px 18px;
+        border-radius: 7px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      button:hover { border-color: var(--accent); color: var(--accent); }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.primary:hover { opacity: 0.9; color: #fff; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .status { margin-top: 16px; font-size: 13px; min-height: 22px; }
+      .status.ok { color: var(--ok); }
+      .status.err { color: var(--err); }
+      .status a { color: inherit; }
+      .inline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+      .inline input { width: auto; }
+      code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>发文后台</h1>
+        <a href="/">← 回到博客</a>
+      </header>
+
+      <div class="card">
+        <div class="row">
+          <div class="field">
+            <label for="pw">发文口令</label>
+            <input id="pw" type="password" autocomplete="current-password" placeholder="部署时用 wrangler secret 设置" />
+            <div class="hint">只存在当前标签页，关掉就没了</div>
+          </div>
+          <div class="field">
+            <label for="pick">载入已有文章</label>
+            <select id="pick"><option value="">— 新建文章 —</option></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="field">
+          <label for="title">标题</label>
+          <input id="title" type="text" placeholder="文章标题" />
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label for="slug">文件名（决定 URL）</label>
+            <input id="slug" type="text" placeholder="留空自动生成" />
+            <div class="hint">最终地址：<code id="urlPreview">/posts/…</code></div>
+          </div>
+          <div class="field">
+            <label for="date">发布时间</label>
+            <input id="date" type="datetime-local" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="desc">摘要</label>
+          <input id="desc" type="text" placeholder="一两句话，会显示在列表页和搜索结果里" />
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label for="tags">标签</label>
+            <input id="tags" type="text" placeholder="用英文逗号分隔，例如：技术, 随笔" />
+          </div>
+          <div class="field" style="flex: 0 0 auto; align-self: center; padding-top: 18px">
+            <span class="inline"><input id="draft" type="checkbox" /><label for="draft" style="margin: 0">存为草稿</label></span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="body">正文（Markdown）</label>
+          <textarea id="body" placeholder="正文从 ## 二级标题开始写，不要用 # （标题已在 frontmatter 里）&#10;&#10;## 小标题&#10;&#10;正文段落……"></textarea>
+          <div class="hint">Ctrl / Cmd + S 直接发布</div>
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="submit">发布</button>
+          <button id="reset">清空新建</button>
+          <span class="hint" id="counter"></span>
+        </div>
+        <div class="status" id="status"></div>
+      </div>
+    </div>
+
+    <script>
+      const $ = id => document.getElementById(id);
+      const els = {
+        pw: $("pw"), pick: $("pick"), title: $("title"), slug: $("slug"), date: $("date"),
+        desc: $("desc"), tags: $("tags"), draft: $("draft"), body: $("body"),
+        submit: $("submit"), reset: $("reset"), status: $("status"), counter: $("counter"),
+        urlPreview: $("urlPreview"),
+      };
+
+      let dirty = false;
+      let loadingPost = false;
+
+      const pad = n => String(n).padStart(2, "0");
+      function localNow() {
+        const d = new Date();
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+
+      function setStatus(text, kind = "") {
+        els.status.className = "status" + (kind ? " " + kind : "");
+        els.status.innerHTML = text;
+      }
+
+      function slugify(raw) {
+        return raw
+          .trim()
+          .toLowerCase()
+          .replace(/['"’]/g, "")
+          .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
+          .replace(/^-+|-+$/g, "");
+      }
+
+      function updatePreview() {
+        const raw = els.slug.value.trim() || slugify(els.title.value);
+        const ascii = raw.replace(/[^\x00-\x7F]/g, "").replace(/-/g, "");
+        els.urlPreview.textContent = "/posts/" + (ascii.length >= 2 ? raw : "post-时间戳");
+      }
+
+      function updateCounter() {
+        els.counter.textContent = `${els.body.value.length} 字`;
+      }
+
+      async function api(path, options = {}) {
+        const res = await fetch(path, {
+          ...options,
+          headers: { "x-admin-password": els.pw.value, ...(options.headers || {}) },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `请求失败（${res.status}）`);
+        return data;
+      }
+
+      async function loadList() {
+        if (!els.pw.value) return;
+        try {
+          const { posts } = await api("/api/posts");
+          els.pick.innerHTML =
+            '<option value="">— 新建文章 —</option>' +
+            posts.map(p => `<option value="${p.path}">${p.name}</option>`).join("");
+        } catch (error) {
+          setStatus("读取文章列表失败：" + error.message, "err");
+        }
+      }
+
+      function parseFrontmatter(text) {
+        const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+        if (!match) return { meta: {}, body: text };
+        const meta = {};
+        const tags = [];
+        let inTags = false;
+        for (const line of match[1].split(/\r?\n/)) {
+          const tagItem = line.match(/^\s+-\s+(.*)$/);
+          if (inTags && tagItem) {
+            tags.push(tagItem[1].replace(/^["']|["']$/g, ""));
+            continue;
+          }
+          inTags = false;
+          const kv = line.match(/^([A-Za-z_]+):\s*(.*)$/);
+          if (!kv) continue;
+          const [, key, value] = kv;
+          if (key === "tags") { inTags = true; continue; }
+          meta[key] = value.replace(/^["']|["']$/g, "");
+        }
+        if (tags.length) meta.tags = tags.join(", ");
+        return { meta, body: text.slice(match[0].length) };
+      }
+
+      async function loadPost(path) {
+        loadingPost = true;
+        try {
+          const { content } = await api("/api/post?path=" + encodeURIComponent(path));
+          const { meta, body } = parseFrontmatter(content);
+          els.title.value = meta.title || "";
+          els.slug.value = path.split("/").pop().replace(/\.mdx?$/, "");
+          els.desc.value = meta.description || "";
+          els.tags.value = meta.tags || "";
+          els.draft.checked = meta.draft === "true";
+          els.body.value = body.replace(/^\n+/, "");
+          if (meta.pubDatetime) {
+            const d = new Date(meta.pubDatetime);
+            if (!isNaN(d)) els.date.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+          }
+          updatePreview();
+          updateCounter();
+          dirty = false;
+          setStatus(`已载入 <code>${path}</code>，修改后点发布会覆盖原文。`, "ok");
+        } catch (error) {
+          setStatus("载入失败：" + error.message, "err");
+        } finally {
+          loadingPost = false;
+        }
+      }
+
+      async function submit() {
+        if (!els.pw.value) return setStatus("先填发文口令。", "err");
+        if (!els.title.value.trim()) return setStatus("标题不能为空。", "err");
+        if (!els.desc.value.trim()) return setStatus("摘要不能为空。", "err");
+        if (!els.body.value.trim()) return setStatus("正文不能为空。", "err");
+
+        els.submit.disabled = true;
+        setStatus("正在提交到 GitHub…");
+        try {
+          const date = els.date.value ? new Date(els.date.value).toISOString() : new Date().toISOString();
+          const data = await api("/api/publish", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              title: els.title.value,
+              description: els.desc.value,
+              slug: els.slug.value.trim() || slugify(els.title.value),
+              tags: els.tags.value.split(/[,，]/).map(t => t.trim()).filter(Boolean),
+              draft: els.draft.checked,
+              date,
+              body: els.body.value,
+            }),
+          });
+          dirty = false;
+          setStatus(
+            `${data.updated ? "已更新" : "已发布"} <code>${data.path}</code>，` +
+            `<a href="${data.commit}" target="_blank" rel="noopener">查看提交</a>。<br>${data.note}` +
+            `<br>线上地址（构建完成后生效）：<a href="${data.url}" target="_blank" rel="noopener">${data.url}</a>`,
+            "ok"
+          );
+          loadList();
+        } catch (error) {
+          setStatus("发布失败：" + error.message, "err");
+        } finally {
+          els.submit.disabled = false;
+        }
+      }
+
+      function resetForm() {
+        els.title.value = "";
+        els.slug.value = "";
+        els.desc.value = "";
+        els.tags.value = "";
+        els.draft.checked = false;
+        els.body.value = "";
+        els.date.value = localNow();
+        els.pick.value = "";
+        updatePreview();
+        updateCounter();
+        dirty = false;
+        setStatus("");
+      }
+
+      els.pw.addEventListener("change", loadList);
+      els.pw.addEventListener("blur", loadList);
+      els.pick.addEventListener("change", e => {
+        if (e.target.value) loadPost(e.target.value);
+      });
+      els.title.addEventListener("input", () => { if (!els.slug.value) updatePreview(); });
+      els.slug.addEventListener("input", updatePreview);
+      els.body.addEventListener("input", updateCounter);
+      els.submit.addEventListener("click", submit);
+      els.reset.addEventListener("click", resetForm);
+      document.addEventListener("keydown", e => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+          e.preventDefault();
+          submit();
+        }
+      });
+      document.querySelectorAll("input, textarea").forEach(el => {
+        el.addEventListener("input", () => { if (!loadingPost) dirty = true; });
+      });
+      window.addEventListener("beforeunload", e => {
+        if (dirty) { e.preventDefault(); e.returnValue = ""; }
+      });
+
+      els.date.value = localNow();
+      updatePreview();
+      updateCounter();
+    </script>
+  </body>
+</html>
