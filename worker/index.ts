@@ -39,8 +39,8 @@ const IMAGE_TYPES: Record<string, string> = {
   bmp: "image/bmp",
 };
 
-/** 单张图片上限，base64 后约 1.33 倍 */
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+/** 单张图片上限（前端会先压缩，这里只是兜底） */
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -461,7 +461,7 @@ async function uploadPhoto(env: Env, payload: Record<string, unknown>): Promise<
 
   const bytes = Math.floor((data.length * 3) / 4);
   if (bytes > MAX_IMAGE_BYTES) {
-    return json({ error: `图片 ${(bytes / 1048576).toFixed(1)}MB，超过 8MB 上限` }, 413);
+    return json({ error: `图片 ${(bytes / 1048576).toFixed(1)}MB，超过 12MB 上限` }, 413);
   }
 
   if (!(await ensureImageBranch(env))) {

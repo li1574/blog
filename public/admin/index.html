@@ -186,7 +186,7 @@
           <label for="files">上传</label>
           <input id="files" type="file" accept="image/*" multiple />
           <div class="hint">
-            jpg / jpeg / png / gif / webp / avif / svg / bmp，单张上限 8MB，可多选
+            jpg / jpeg / png / gif / webp / avif / svg / bmp，可多选 · 上传前自动压缩到长边 2000px（gif 和 svg 不压）
           </div>
         </div>
         <div id="photoGrid" class="pgrid"></div>
@@ -335,13 +335,69 @@
         els.photoStatus.textContent = text;
       }
 
-      function readAsBase64(file) {
+      function blobToBase64(blob) {
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
           reader.onerror = () => reject(new Error("读取文件失败"));
-          reader.readAsDataURL(file);
+          reader.readAsDataURL(blob);
         });
+      }
+
+      function formatBytes(n) {
+        if (n >= 1048576) return `${(n / 1048576).toFixed(1)}MB`;
+        return `${Math.max(1, Math.round(n / 1024))}KB`;
+      }
+
+      /**
+       * 上传前压缩：长边最多 2000px，质量 0.85。
+       * gif（怕丢动画）和 svg（矢量没必要）原样上传。
+       * 压完比原图还大就不压。
+       */
+      async function compressImage(file) {
+        const ext = (file.name.split(".").pop() || "").toLowerCase();
+        const passthrough = { blob: file, name: file.name };
+        if (["gif", "svg"].includes(ext)) return passthrough;
+
+        let bitmap;
+        try {
+          bitmap = await createImageBitmap(file);
+        } catch {
+          return passthrough;
+        }
+
+        const MAX_EDGE = 2000;
+        const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+        const width = Math.max(1, Math.round(bitmap.width * scale));
+        const height = Math.max(1, Math.round(bitmap.height * scale));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          bitmap.close && bitmap.close();
+          return passthrough;
+        }
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(bitmap, 0, 0, width, height);
+        bitmap.close && bitmap.close();
+
+        // 可能带透明通道的格式优先转 webp，保住透明；不支持时退回 jpeg
+        const wantsAlpha = ["png", "webp", "avif"].includes(ext);
+        const attempts = wantsAlpha
+          ? [["image/webp", "webp"], ["image/jpeg", "jpg"]]
+          : [["image/jpeg", "jpg"]];
+
+        for (const [type, newExt] of attempts) {
+          const blob = await new Promise(res => canvas.toBlob(res, type, 0.85));
+          if (!blob || blob.type !== type) continue;
+          if (blob.size >= file.size) return passthrough;
+          const stem = file.name.replace(/\.[^.]+$/, "");
+          return { blob, name: `${stem}.${newExt}` };
+        }
+        return passthrough;
       }
 
       function renderPhotos(photos) {
@@ -402,16 +458,24 @@
         const list = [...files];
         if (!list.length) return;
 
+        let saved = 0;
         for (let i = 0; i < list.length; i++) {
           const file = list[i];
-          setPhotoStatus(`上传中 ${i + 1}/${list.length}：${file.name}`);
+          setPhotoStatus(`处理中 ${i + 1}/${list.length}：${file.name}`);
           try {
-            const data = await readAsBase64(file);
+            const { blob, name } = await compressImage(file);
+            const data = await blobToBase64(blob);
+            const sizeNote =
+              blob.size < file.size
+                ? `（${formatBytes(file.size)} → ${formatBytes(blob.size)}）`
+                : `（${formatBytes(blob.size)}）`;
+            setPhotoStatus(`上传中 ${i + 1}/${list.length}：${name}${sizeNote}`);
             await api("/api/upload", {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ name: file.name, data }),
+              body: JSON.stringify({ name, data }),
             });
+            saved += Math.max(0, file.size - blob.size);
           } catch (error) {
             setPhotoStatus(`第 ${i + 1} 张失败：${error.message}`, "err");
             return;
@@ -420,7 +484,10 @@
 
         els.files.value = "";
         await loadPhotos();
-        setPhotoStatus(`已上传 ${list.length} 张`, "ok");
+        setPhotoStatus(
+          `已上传 ${list.length} 张${saved > 0 ? `，共省下 ${formatBytes(saved)}` : ""}`,
+          "ok"
+        );
       }
 
       async function removePhoto(name) {
