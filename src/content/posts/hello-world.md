@@ -3,7 +3,7 @@ title: "开始写第一篇文章"
 description: "这个博客的格式约定、发文流程和几个能直接用的写法示例。"
 pubDatetime: 2026-10-18T09:30:00+08:00
 author: li1574
-featured: true
+featured: false
 tags:
   - 随笔
   - 使用说明
