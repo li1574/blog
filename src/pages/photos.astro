@@ -1,0 +1,135 @@
+---
+import Layout from "@/layouts/Layout.astro";
+import Header from "@/components/Header.astro";
+import Breadcrumb from "@/components/Breadcrumb.astro";
+import Main from "@/components/Main.astro";
+import Footer from "@/components/Footer.astro";
+import config from "@/config";
+
+const title = "图片";
+const description = "随手拍的、存下来的、觉得值得留着的图。";
+---
+
+<Layout title={`${title} | ${config.site.title}`} description={description}>
+  <Header />
+
+  <Breadcrumb />
+
+  <Main pageTitle={title} class="app-prose">
+    <p class="text-muted-foreground -mt-2 mb-6 text-sm">
+      图片存在仓库的独立分支里，不参与站点构建，上传后即时可见。
+    </p>
+
+    <div id="gallery" class="not-prose">
+      <p id="gallery-state" class="text-muted-foreground text-sm">正在加载…</p>
+      <div
+        id="gallery-grid"
+        class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4"
+        hidden
+      >
+      </div>
+    </div>
+  </Main>
+
+  <Footer />
+</Layout>
+
+<div
+  id="lightbox"
+  class="fixed inset-0 z-50 hidden items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
+>
+  <img id="lightbox-img" class="max-h-[92vh] max-w-full rounded-md" alt="" />
+  <button
+    id="lightbox-close"
+    class="absolute top-4 right-4 flex size-10 items-center justify-center rounded-full bg-white/10 text-2xl text-white hover:bg-white/20"
+    aria-label="关闭"
+  >
+    ×
+  </button>
+  <a
+    id="lightbox-open"
+    class="absolute bottom-4 text-sm text-white/70 underline underline-offset-4 hover:text-white"
+    target="_blank"
+    rel="noopener"
+  >
+    在新窗口打开原图
+  </a>
+</div>
+
+<script>
+  const grid = document.getElementById("gallery-grid") as HTMLDivElement;
+  const state = document.getElementById("gallery-state") as HTMLParagraphElement;
+  const box = document.getElementById("lightbox") as HTMLDivElement;
+  const boxImg = document.getElementById("lightbox-img") as HTMLImageElement;
+  const boxClose = document.getElementById("lightbox-close") as HTMLButtonElement;
+  const boxOpen = document.getElementById("lightbox-open") as HTMLAnchorElement;
+
+  function formatSize(bytes: number): string {
+    if (bytes > 1024 * 1024) return `${(bytes / 1048576).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+
+  function openLightbox(src: string, alt: string) {
+    boxImg.src = src;
+    boxImg.alt = alt;
+    boxOpen.href = src;
+    box.classList.remove("hidden");
+    box.classList.add("flex");
+  }
+
+  function closeLightbox() {
+    box.classList.add("hidden");
+    box.classList.remove("flex");
+    boxImg.src = "";
+  }
+
+  boxClose.addEventListener("click", closeLightbox);
+  box.addEventListener("click", e => {
+    if (e.target === box) closeLightbox();
+  });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && !box.classList.contains("hidden")) closeLightbox();
+  });
+
+  async function load() {
+    try {
+      const res = await fetch("/api/photos", { headers: { accept: "application/json" } });
+      if (!res.ok) throw new Error(`接口返回 ${res.status}`);
+      const { photos } = (await res.json()) as {
+        photos: { name: string; size: number; url: string }[];
+      };
+
+      if (!photos.length) {
+        state.textContent = "还没有图片。去后台 /admin 上传几张。";
+        return;
+      }
+
+      state.hidden = true;
+      grid.hidden = false;
+
+      for (const photo of photos) {
+        const cell = document.createElement("button");
+        cell.type = "button";
+        cell.className =
+          "group relative aspect-square overflow-hidden rounded-md border border-border bg-muted/40 focus-visible:outline-accent";
+        cell.title = `${photo.name} · ${formatSize(photo.size)}`;
+        cell.addEventListener("click", () => openLightbox(photo.url, photo.name));
+
+        const img = document.createElement("img");
+        img.src = photo.url;
+        img.alt = photo.name;
+        img.loading = "lazy";
+        img.decoding = "async";
+        img.className =
+          "size-full object-cover transition duration-300 group-hover:scale-105";
+
+        cell.appendChild(img);
+        grid.appendChild(cell);
+      }
+    } catch (error) {
+      state.textContent = `加载失败：${(error as Error).message}`;
+    }
+  }
+
+  load();
+</script>

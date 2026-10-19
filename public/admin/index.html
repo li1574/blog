@@ -72,6 +72,7 @@
       button:hover { border-color: var(--accent); color: var(--accent); }
       button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
       button.primary:hover { opacity: 0.9; color: #fff; }
+      button.danger:hover { border-color: var(--err); color: var(--err); }
       button:disabled { opacity: 0.5; cursor: not-allowed; }
       .status { margin-top: 16px; font-size: 13px; min-height: 22px; }
       .status.ok { color: var(--ok); }
@@ -86,6 +87,13 @@
       .frow input { width: auto; margin: 0; }
       .ftitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .fmeta { font-size: 12px; color: var(--muted); white-space: nowrap; }
+      .pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; margin-top: 4px; }
+      .pitem { position: relative; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--code); }
+      .pitem img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
+      .pbar { display: flex; gap: 6px; padding: 6px; }
+      .pbar button { flex: 1; padding: 4px 6px; font-size: 12px; border-radius: 5px; }
+      .pbar button.danger:hover { border-color: var(--err); color: var(--err); }
+      input[type="file"] { padding: 7px 9px; }
       .inline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
       .inline input { width: auto; }
       code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
@@ -154,6 +162,7 @@
         <div class="actions">
           <button class="primary" id="submit">发布</button>
           <button id="reset">清空新建</button>
+          <button id="deletePost" class="danger" hidden>删除这篇</button>
           <span class="hint" id="counter"></span>
         </div>
         <div class="status" id="status"></div>
@@ -167,6 +176,22 @@
         <div id="featuredList" class="flist"></div>
         <div class="status" id="featuredStatus"></div>
       </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>图片</h2>
+          <span class="hint">存到仓库 images 分支，不进构建</span>
+        </div>
+        <div class="field">
+          <label for="files">上传</label>
+          <input id="files" type="file" accept="image/*" multiple />
+          <div class="hint">
+            jpg / jpeg / png / gif / webp / avif / svg / bmp，单张上限 8MB，可多选
+          </div>
+        </div>
+        <div id="photoGrid" class="pgrid"></div>
+        <div class="status" id="photoStatus"></div>
+      </div>
     </div>
 
     <script>
@@ -178,11 +203,14 @@
         urlPreview: $("urlPreview"),
         featuredCard: $("featuredCard"), featuredList: $("featuredList"),
         featuredStatus: $("featuredStatus"),
+        deletePost: $("deletePost"), files: $("files"),
+        photoGrid: $("photoGrid"), photoStatus: $("photoStatus"),
       };
 
       let dirty = false;
       let loadingPost = false;
       let allPosts = [];
+      let currentPath = "";
 
       const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -302,6 +330,135 @@
         return { meta, body: text.slice(match[0].length) };
       }
 
+      function setPhotoStatus(text, kind = "") {
+        els.photoStatus.className = "status" + (kind ? " " + kind : "");
+        els.photoStatus.textContent = text;
+      }
+
+      function readAsBase64(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+          reader.onerror = () => reject(new Error("读取文件失败"));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      function renderPhotos(photos) {
+        els.photoGrid.innerHTML = "";
+        if (!photos.length) {
+          els.photoGrid.innerHTML = '<p class="hint">还没有图片。</p>';
+          return;
+        }
+        for (const photo of photos) {
+          const item = document.createElement("div");
+          item.className = "pitem";
+
+          const img = document.createElement("img");
+          img.src = photo.url;
+          img.alt = photo.name;
+          img.loading = "lazy";
+          img.title = photo.name;
+
+          const bar = document.createElement("div");
+          bar.className = "pbar";
+
+          const copy = document.createElement("button");
+          copy.textContent = "复制";
+          copy.title = "复制 Markdown 引用";
+          copy.addEventListener("click", async () => {
+            const md = `![${photo.name}](${photo.url})`;
+            try {
+              await navigator.clipboard.writeText(md);
+              setPhotoStatus(`已复制：${md}`, "ok");
+            } catch {
+              setPhotoStatus("复制失败，手动复制：" + md, "err");
+            }
+          });
+
+          const del = document.createElement("button");
+          del.textContent = "删除";
+          del.className = "danger";
+          del.addEventListener("click", () => removePhoto(photo.name));
+
+          bar.append(copy, del);
+          item.append(img, bar);
+          els.photoGrid.appendChild(item);
+        }
+      }
+
+      async function loadPhotos() {
+        if (!els.pw.value) return;
+        try {
+          const { photos } = await api("/api/photos");
+          renderPhotos(photos);
+        } catch (error) {
+          setPhotoStatus("读取图片失败：" + error.message, "err");
+        }
+      }
+
+      async function uploadFiles(files) {
+        if (!els.pw.value) return setPhotoStatus("先填发文口令。", "err");
+        const list = [...files];
+        if (!list.length) return;
+
+        for (let i = 0; i < list.length; i++) {
+          const file = list[i];
+          setPhotoStatus(`上传中 ${i + 1}/${list.length}：${file.name}`);
+          try {
+            const data = await readAsBase64(file);
+            await api("/api/upload", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ name: file.name, data }),
+            });
+          } catch (error) {
+            setPhotoStatus(`第 ${i + 1} 张失败：${error.message}`, "err");
+            return;
+          }
+        }
+
+        els.files.value = "";
+        await loadPhotos();
+        setPhotoStatus(`已上传 ${list.length} 张`, "ok");
+      }
+
+      async function removePhoto(name) {
+        if (!confirm(`确定删除图片 ${name}？\n\n引用它的文章会变成坏图。`)) return;
+        setPhotoStatus("正在删除…");
+        try {
+          const data = await api("/api/photo?name=" + encodeURIComponent(name), {
+            method: "DELETE",
+          });
+          await loadPhotos();
+          setPhotoStatus(data.note, "ok");
+        } catch (error) {
+          setPhotoStatus("删除失败：" + error.message, "err");
+        }
+      }
+
+      async function removePost() {
+        if (!currentPath) return;
+        const item = allPosts.find(p => p.path === currentPath);
+        const label = item?.title || currentPath;
+        if (!confirm(`确定删除《${label}》？\n\n会从仓库删掉这个文件，1-2 分钟后线上消失。不可撤销。`)) return;
+
+        els.deletePost.disabled = true;
+        setStatus("正在删除…");
+        try {
+          const data = await api("/api/post?path=" + encodeURIComponent(currentPath), {
+            method: "DELETE",
+          });
+          setStatus(`已删除《${data.title}》。${data.note}`, "ok");
+          resetForm();
+          await loadList();
+        } catch (error) {
+          setStatus("删除失败：" + error.message, "err");
+        } finally {
+          els.deletePost.disabled = false;
+        }
+      }
+
       async function loadPost(path) {
         loadingPost = true;
         try {
@@ -320,6 +477,8 @@
           updatePreview();
           updateCounter();
           dirty = false;
+          currentPath = path;
+          els.deletePost.hidden = false;
           setStatus(`已载入 <code>${path}</code>，修改后点发布会覆盖原文。`, "ok");
         } catch (error) {
           setStatus("载入失败：" + error.message, "err");
@@ -375,14 +534,18 @@
         els.body.value = "";
         els.date.value = localNow();
         els.pick.value = "";
+        currentPath = "";
+        els.deletePost.hidden = true;
         updatePreview();
         updateCounter();
         dirty = false;
         setStatus("");
       }
 
-      els.pw.addEventListener("change", loadList);
-      els.pw.addEventListener("blur", loadList);
+      els.pw.addEventListener("change", () => { loadList(); loadPhotos(); });
+      els.pw.addEventListener("blur", () => { loadList(); loadPhotos(); });
+      els.files.addEventListener("change", e => uploadFiles(e.target.files));
+      els.deletePost.addEventListener("click", removePost);
       els.featuredList.addEventListener("change", e => {
         const box = e.target.closest('input[type="checkbox"]');
         if (!box) return;

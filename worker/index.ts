@@ -21,9 +21,26 @@ interface Env {
   GITHUB_REPO: string;
   GITHUB_BRANCH?: string;
   POSTS_DIR?: string;
+  IMAGE_BRANCH?: string;
+  IMAGE_DIR?: string;
 }
 
 const GH_API = "https://api.github.com";
+
+/** 允许上传的图片格式，键是扩展名，值是 Content-Type */
+const IMAGE_TYPES: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  svg: "image/svg+xml",
+  bmp: "image/bmp",
+};
+
+/** 单张图片上限，base64 后约 1.33 倍 */
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -72,6 +89,68 @@ function postsDir(env: Env): string {
 
 function branch(env: Env): string {
   return env.GITHUB_BRANCH ?? "main";
+}
+
+function imageBranch(env: Env): string {
+  return env.IMAGE_BRANCH ?? "images";
+}
+
+function imageDir(env: Env): string {
+  return env.IMAGE_DIR ?? "images";
+}
+
+/** 图片分支不存在时自动创建（孤立分支，只放图片） */
+async function ensureImageBranch(env: Env): Promise<boolean> {
+  const head = await fetch(`${GH_API}/repos/${env.GITHUB_REPO}/git/ref/heads/${imageBranch(env)}`, {
+    headers: ghHeaders(env),
+  });
+  if (head.ok) return true;
+
+  const call = async (path: string, body: unknown) => {
+    const res = await fetch(`${GH_API}/repos/${env.GITHUB_REPO}${path}`, {
+      method: "POST",
+      headers: { ...ghHeaders(env), "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.ok ? ((await res.json()) as { sha: string }) : null;
+  };
+
+  const blob = await call("/git/blobs", { content: "图片资源分支\n", encoding: "utf-8" });
+  if (!blob) return false;
+  const tree = await call("/git/trees", {
+    tree: [{ path: ".gitkeep", mode: "100644", type: "blob", sha: blob.sha }],
+  });
+  if (!tree) return false;
+  const commit = await call("/git/commits", {
+    message: "init: 图片资源分支",
+    tree: tree.sha,
+    parents: [],
+  });
+  if (!commit) return false;
+  const ref = await call("/git/refs", {
+    ref: `refs/heads/${imageBranch(env)}`,
+    sha: commit.sha,
+  });
+  return Boolean(ref);
+}
+
+/** 只保留安全字符，中文保留，其余替换成连字符 */
+function safeImageName(raw: string): string {
+  const base = (raw.split(/[\\/]/).pop() ?? "").normalize("NFC");
+  const dot = base.lastIndexOf(".");
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+  const clean =
+    stem
+      .replace(/[^\p{Letter}\p{Number}_-]+/gu, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 60) || "img";
+  return ext ? `${clean}.${ext}` : clean;
+}
+
+function extOf(name: string): string {
+  return name.split(".").pop()?.toLowerCase() ?? "";
 }
 
 /** 中文标题没法直接当文件名，兜底用时间戳 */
@@ -295,9 +374,207 @@ async function publish(env: Env, payload: Record<string, unknown>): Promise<Resp
   });
 }
 
+/** 公开：图片列表 */
+async function listPhotos(env: Env): Promise<Response> {
+  const res = await fetch(
+    `${GH_API}/repos/${env.GITHUB_REPO}/contents/${imageDir(env)}?ref=${imageBranch(env)}`,
+    { headers: ghHeaders(env) }
+  );
+  if (res.status === 404) return json({ photos: [] });
+  if (!res.ok) return json({ error: `GitHub ${res.status}` }, 502);
+
+  const items = (await res.json()) as Array<{
+    name: string;
+    size: number;
+    sha: string;
+    type: string;
+  }>;
+
+  const photos = items
+    .filter(item => item.type === "file" && IMAGE_TYPES[extOf(item.name)])
+    .map(item => ({
+      name: item.name,
+      size: item.size,
+      url: `/img/${encodeURIComponent(item.name)}`,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+
+  return json({ photos });
+}
+
+/** 公开：从 GitHub 取图，缓存到边缘节点 */
+async function serveImage(env: Env, rawName: string): Promise<Response> {
+  let clean: string;
+  try {
+    clean = decodeURIComponent(rawName);
+  } catch {
+    return new Response("Bad request", { status: 400 });
+  }
+  if (!clean || clean.includes("..") || clean.includes("/")) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const type = IMAGE_TYPES[extOf(clean)];
+  if (!type) return new Response("Unsupported", { status: 415 });
+
+  // caches.default 是 Cloudflare 的扩展，标准 DOM 类型里没有
+  const cache = (caches as unknown as { default: Cache }).default;
+  const key = new Request(`https://img.cache/${encodeURIComponent(clean)}`);
+  const hit = await cache.match(key);
+  if (hit) return hit;
+
+  const res = await fetch(
+    `${GH_API}/repos/${env.GITHUB_REPO}/contents/${imageDir(env)}/${encodeURIComponent(clean)}?ref=${imageBranch(env)}`,
+    { headers: { ...ghHeaders(env), accept: "application/vnd.github.raw" } }
+  );
+  if (!res.ok) return new Response("Not found", { status: 404 });
+
+  const headers: Record<string, string> = {
+    "content-type": type,
+    "cache-control": "public, max-age=31536000, immutable",
+    "x-content-type-options": "nosniff",
+  };
+  // SVG 直接访问时可能执行脚本，加一条 CSP 兜底
+  if (type === "image/svg+xml") {
+    headers["content-security-policy"] = "default-src 'none'; style-src 'unsafe-inline'";
+  }
+
+  const out = new Response(await res.arrayBuffer(), { headers });
+  await cache.put(key, out.clone());
+  return out;
+}
+
+/** 上传图片到图片分支 */
+async function uploadPhoto(env: Env, payload: Record<string, unknown>): Promise<Response> {
+  const rawName = String(payload.name ?? "").trim();
+  const data = String(payload.data ?? "").replace(/^data:[^;]+;base64,/, "").replace(/\s/g, "");
+  if (!rawName || !data) return json({ error: "缺少文件名或图片内容" }, 400);
+
+  const name = safeImageName(rawName);
+  const ext = extOf(name);
+  if (!IMAGE_TYPES[ext]) {
+    return json(
+      { error: `不支持的格式：${ext || "未知"}（支持 ${Object.keys(IMAGE_TYPES).join(" / ")}）` },
+      415
+    );
+  }
+
+  const bytes = Math.floor((data.length * 3) / 4);
+  if (bytes > MAX_IMAGE_BYTES) {
+    return json({ error: `图片 ${(bytes / 1048576).toFixed(1)}MB，超过 8MB 上限` }, 413);
+  }
+
+  if (!(await ensureImageBranch(env))) {
+    return json({ error: "图片分支创建失败，请检查令牌权限" }, 500);
+  }
+
+  // 重名就加序号，不覆盖已有图片
+  const stem = name.slice(0, name.length - ext.length - 1);
+  let finalName = name;
+  for (let i = 2; i < 50; i++) {
+    const probe = await fetch(
+      `${GH_API}/repos/${env.GITHUB_REPO}/contents/${imageDir(env)}/${encodeURIComponent(finalName)}?ref=${imageBranch(env)}`,
+      { headers: ghHeaders(env) }
+    );
+    if (probe.status === 404) break;
+    finalName = `${stem}-${i}.${ext}`;
+  }
+
+  const res = await fetch(
+    `${GH_API}/repos/${env.GITHUB_REPO}/contents/${imageDir(env)}/${encodeURIComponent(finalName)}`,
+    {
+      method: "PUT",
+      headers: { ...ghHeaders(env), "content-type": "application/json" },
+      body: JSON.stringify({
+        message: `上传图片：${finalName}`,
+        content: data,
+        branch: imageBranch(env),
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    return json({ error: `上传失败：GitHub ${res.status} ${await res.text()}` }, 502);
+  }
+
+  const result = (await res.json()) as { commit: { html_url: string } };
+  const url = `/img/${encodeURIComponent(finalName)}`;
+  return json({
+    ok: true,
+    name: finalName,
+    url,
+    markdown: `![${finalName}](${url})`,
+    commit: result.commit.html_url,
+  });
+}
+
+/** 删除图片 */
+async function deletePhoto(env: Env, rawName: string): Promise<Response> {
+  const clean = decodeURIComponent(rawName);
+  if (!clean || clean.includes("..") || clean.includes("/")) {
+    return json({ error: "参数不合法" }, 400);
+  }
+
+  const path = `${imageDir(env)}/${encodeURIComponent(clean)}`;
+  const head = await fetch(
+    `${GH_API}/repos/${env.GITHUB_REPO}/contents/${path}?ref=${imageBranch(env)}`,
+    { headers: ghHeaders(env) }
+  );
+  if (!head.ok) return json({ error: `图片不存在（GitHub ${head.status}）` }, 404);
+
+  const file = (await head.json()) as { sha: string };
+  const res = await fetch(`${GH_API}/repos/${env.GITHUB_REPO}/contents/${path}`, {
+    method: "DELETE",
+    headers: { ...ghHeaders(env), "content-type": "application/json" },
+    body: JSON.stringify({
+      message: `删除图片：${clean}`,
+      sha: file.sha,
+      branch: imageBranch(env),
+    }),
+  });
+
+  if (!res.ok) return json({ error: `删除失败：GitHub ${res.status}` }, 502);
+  return json({ ok: true, note: "已删除。已缓存的图片会在边缘缓存过期后消失。" });
+}
+
+/** 删除文章 */
+async function deletePost(env: Env, path: string): Promise<Response> {
+  if (!path || path.includes("..") || !path.startsWith(postsDir(env))) {
+    return json({ error: "参数不合法" }, 400);
+  }
+
+  const head = await fetch(
+    `${GH_API}/repos/${env.GITHUB_REPO}/contents/${path}?ref=${branch(env)}`,
+    { headers: ghHeaders(env) }
+  );
+  if (!head.ok) return json({ error: `文章不存在（GitHub ${head.status}）` }, 404);
+
+  const file = (await head.json()) as { sha: string; content: string };
+  const title = parseMeta(fromBase64(file.content)).title || path;
+
+  const res = await fetch(`${GH_API}/repos/${env.GITHUB_REPO}/contents/${path}`, {
+    method: "DELETE",
+    headers: { ...ghHeaders(env), "content-type": "application/json" },
+    body: JSON.stringify({
+      message: `删除文章：${title}`,
+      sha: file.sha,
+      branch: branch(env),
+    }),
+  });
+
+  if (!res.ok) return json({ error: `删除失败：GitHub ${res.status} ${await res.text()}` }, 502);
+  return json({ ok: true, title, note: "已提交删除，1-2 分钟后线上消失。" });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // 图片代理：公开可读，带边缘缓存
+    if (url.pathname.startsWith("/img/")) {
+      if (!env.GITHUB_TOKEN) return new Response("服务端未配置", { status: 500 });
+      return await serveImage(env, url.pathname.slice("/img/".length));
+    }
 
     if (!url.pathname.startsWith("/api/")) {
       return env.ASSETS.fetch(request);
@@ -307,6 +584,12 @@ export default {
       return json({ error: "服务端未配置 GITHUB_TOKEN / ADMIN_PASSWORD" }, 500);
     }
 
+    // 公开只读接口，图片浏览页要用
+    if (url.pathname === "/api/photos" && request.method === "GET") {
+      return await listPhotos(env);
+    }
+
+    // 以下都要口令
     const password = request.headers.get("x-admin-password") ?? "";
     if (!safeEqual(password, env.ADMIN_PASSWORD)) {
       return json({ error: "口令不正确" }, 401);
@@ -323,6 +606,12 @@ export default {
         return await readPost(env, path);
       }
 
+      if (url.pathname === "/api/post" && request.method === "DELETE") {
+        const path = url.searchParams.get("path");
+        if (!path) return json({ error: "缺少 path 参数" }, 400);
+        return await deletePost(env, path);
+      }
+
       if (url.pathname === "/api/featured" && request.method === "POST") {
         const payload = (await request.json()) as Record<string, unknown>;
         return await setFeatured(env, payload);
@@ -331,6 +620,17 @@ export default {
       if (url.pathname === "/api/publish" && request.method === "POST") {
         const payload = (await request.json()) as Record<string, unknown>;
         return await publish(env, payload);
+      }
+
+      if (url.pathname === "/api/upload" && request.method === "POST") {
+        const payload = (await request.json()) as Record<string, unknown>;
+        return await uploadPhoto(env, payload);
+      }
+
+      if (url.pathname === "/api/photo" && request.method === "DELETE") {
+        const name = url.searchParams.get("name");
+        if (!name) return json({ error: "缺少 name 参数" }, 400);
+        return await deletePhoto(env, name);
       }
 
       return json({ error: "Not Found" }, 404);

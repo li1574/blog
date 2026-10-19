@@ -98,6 +98,14 @@ const isActive = (path: string) => {
             {t.nav.about}
           </a>
         </li>
+        <li class="col-span-2">
+          <a
+            href={getRelativeLocaleUrl(locale, "photos")}
+            class:list={{ "active-nav": isActive("/photos") }}
+          >
+            {t.nav.photos}
+          </a>
+        </li>
         {
           features.showArchives && (
             <li class="col-span-2">
