@@ -57,18 +57,17 @@ scripts/                构建辅助脚本
 ## 部署
 
 ```bash
-npm run build
-npx wrangler deploy
+npm run deploy        # = npm run build && wrangler deploy
 ```
 
-首次部署需要设置两个密钥：
+首次部署需要设置两个密钥（必须用 `printf`，`echo` 会把换行写进密钥）：
 
 ```bash
-npx wrangler secret put GITHUB_TOKEN      # 细粒度 PAT，仅 Contents: Read and write
-npx wrangler secret put ADMIN_PASSWORD    # 发文口令
+printf '%s' 'github_pat_xxx' | npx wrangler secret put GITHUB_TOKEN
+printf '%s' '口令' | npx wrangler secret put ADMIN_PASSWORD
 ```
 
-完整步骤见 `部署说明.md`（不在本仓库时，看 `wrangler.jsonc` 里的绑定项自行配置）。
+完整运维说明见 [`docs/部署说明.md`](docs/部署说明.md)，主题使用教程见 [`docs/AstroPaper-使用教程.md`](docs/AstroPaper-使用教程.md)。
 
 ## 几个约定
 

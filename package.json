@@ -10,6 +10,7 @@
     "dev": "astro dev",
     "prebuild": "node scripts/prepare-assets.mjs",
     "build": "astro check && astro build && pagefind --site dist && node scripts/postbuild.mjs",
+    "deploy": "npm run build && wrangler deploy",
     "preview": "astro preview",
     "sync": "astro sync",
     "astro": "astro",
@@ -18,6 +19,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@astrojs/markdown-remark": "^7.2.0",
     "@astrojs/mdx": "^7.0.0",
     "@astrojs/rss": "^4.0.19",
     "@astrojs/sitemap": "^3.7.3",
@@ -25,7 +27,6 @@
     "astro": "^7.0.3",
     "dayjs": "^1.11.21",
     "lodash.kebabcase": "^4.1.1",
-    "@astrojs/markdown-remark": "^7.2.0",
     "rehype-callouts": "^2.2.0",
     "remark-collapse": "^0.1.2",
     "remark-toc": "^9.0.0",
@@ -47,6 +48,7 @@
     "prettier": "3.9.3",
     "prettier-plugin-astro": "0.14.1",
     "prettier-plugin-tailwindcss": "^0.8.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "wrangler": "^4.151.2"
   }
 }
