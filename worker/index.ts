@@ -148,7 +148,8 @@ async function readPost(env: Env, path: string): Promise<Response> {
 async function publish(env: Env, payload: Record<string, unknown>): Promise<Response> {
   const title = String(payload.title ?? "").trim();
   const description = String(payload.description ?? "").trim();
-  const body = String(payload.body ?? "");
+  // 浏览器/剪贴板可能带 CRLF，统一成 LF，避免仓库里出现混合换行
+  const body = String(payload.body ?? "").replace(/\r\n?/g, "\n");
   if (!title) return json({ error: "标题不能为空" }, 400);
   if (!description) return json({ error: "摘要不能为空（SEO 会用到）" }, 400);
   if (!body.trim()) return json({ error: "正文不能为空" }, 400);

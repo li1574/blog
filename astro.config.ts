@@ -10,6 +10,7 @@ import sitemap from "@astrojs/sitemap";
 import { unified } from "@astrojs/markdown-remark";
 import remarkToc from "remark-toc";
 import remarkCollapse from "remark-collapse";
+import remarkBreaks from "remark-breaks";
 import rehypeCallouts from "rehype-callouts";
 import {
   transformerNotationDiff,
@@ -40,6 +41,7 @@ export default defineConfig({
       remarkPlugins: [
         remarkToc,
         [remarkCollapse, { test: /^(Table of contents|目录)$/ }],
+        remarkBreaks,
       ],
       rehypePlugins: [rehypeCallouts],
     }),
