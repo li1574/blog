@@ -77,6 +77,15 @@
       .status.ok { color: var(--ok); }
       .status.err { color: var(--err); }
       .status a { color: inherit; }
+      .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+      .card-head h2 { font-size: 15px; font-weight: 500; margin: 0; }
+      .flist { display: flex; flex-direction: column; }
+      .frow { display: flex; align-items: center; gap: 10px; padding: 10px 2px; border-top: 1px solid var(--border); cursor: pointer; }
+      .frow:first-child { border-top: none; }
+      .frow:hover { background: var(--code); }
+      .frow input { width: auto; margin: 0; }
+      .ftitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .fmeta { font-size: 12px; color: var(--muted); white-space: nowrap; }
       .inline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
       .inline input { width: auto; }
       code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
@@ -149,6 +158,15 @@
         </div>
         <div class="status" id="status"></div>
       </div>
+
+      <div class="card" id="featuredCard" hidden>
+        <div class="card-head">
+          <h2>精选文章</h2>
+          <span class="hint">勾选后出现在首页「精选」区</span>
+        </div>
+        <div id="featuredList" class="flist"></div>
+        <div class="status" id="featuredStatus"></div>
+      </div>
     </div>
 
     <script>
@@ -158,10 +176,15 @@
         desc: $("desc"), tags: $("tags"), draft: $("draft"), body: $("body"),
         submit: $("submit"), reset: $("reset"), status: $("status"), counter: $("counter"),
         urlPreview: $("urlPreview"),
+        featuredCard: $("featuredCard"), featuredList: $("featuredList"),
+        featuredStatus: $("featuredStatus"),
       };
 
       let dirty = false;
       let loadingPost = false;
+      let allPosts = [];
+
+      const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
       const pad = n => String(n).padStart(2, "0");
       function localNow() {
@@ -207,11 +230,52 @@
         if (!els.pw.value) return;
         try {
           const { posts } = await api("/api/posts");
+          allPosts = posts;
           els.pick.innerHTML =
             '<option value="">— 新建文章 —</option>' +
-            posts.map(p => `<option value="${p.path}">${p.name}</option>`).join("");
+            posts.map(p => `<option value="${esc(p.path)}">${esc(p.title || p.name)}</option>`).join("");
+          renderFeatured();
         } catch (error) {
           setStatus("读取文章列表失败：" + error.message, "err");
+        }
+      }
+
+      function renderFeatured() {
+        els.featuredCard.hidden = allPosts.length === 0;
+        els.featuredList.innerHTML = allPosts
+          .map(p => {
+            const date = (p.pubDatetime || "").slice(0, 10);
+            const flag = p.draft ? "草稿 · " : "";
+            return `<label class="frow">
+              <input type="checkbox" data-path="${esc(p.path)}" ${p.featured ? "checked" : ""}>
+              <span class="ftitle">${esc(p.title || p.name)}</span>
+              <span class="fmeta">${flag}${esc(date)}</span>
+            </label>`;
+          })
+          .join("");
+      }
+
+      async function toggleFeatured(path, featured, checkbox) {
+        checkbox.disabled = true;
+        els.featuredStatus.className = "status";
+        els.featuredStatus.textContent = "正在提交…";
+        try {
+          const data = await api("/api/featured", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ path, featured }),
+          });
+          const item = allPosts.find(p => p.path === path);
+          if (item) item.featured = featured;
+          els.featuredStatus.className = "status ok";
+          els.featuredStatus.innerHTML =
+            `${featured ? "已设为精选" : "已取消精选"} · <a href="${data.commit}" target="_blank" rel="noopener">查看提交</a> · ${data.note}`;
+        } catch (error) {
+          checkbox.checked = !featured;
+          els.featuredStatus.className = "status err";
+          els.featuredStatus.textContent = "操作失败：" + error.message;
+        } finally {
+          checkbox.disabled = false;
         }
       }
 
@@ -319,6 +383,11 @@
 
       els.pw.addEventListener("change", loadList);
       els.pw.addEventListener("blur", loadList);
+      els.featuredList.addEventListener("change", e => {
+        const box = e.target.closest('input[type="checkbox"]');
+        if (!box) return;
+        toggleFeatured(box.dataset.path, box.checked, box);
+      });
       els.pick.addEventListener("change", e => {
         if (e.target.value) loadPost(e.target.value);
       });

@@ -114,6 +114,38 @@ function buildFrontmatter(input: {
   ].join("\n");
 }
 
+/** 从 markdown 原文里抠出需要的元信息 */
+function parseMeta(content: string) {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  const fm = match ? match[1] : "";
+  const get = (key: string) => {
+    const hit = new RegExp(`^${key}:\\s*(.*)$`, "m").exec(fm);
+    return hit ? hit[1].replace(/^["']|["']$/g, "").trim() : "";
+  };
+  return {
+    title: get("title"),
+    featured: get("featured") === "true",
+    draft: get("draft") === "true",
+    pubDatetime: get("pubDatetime"),
+  };
+}
+
+/** 改写 frontmatter 里的某个布尔字段，其余内容原样保留 */
+function setFlag(content: string, key: string, value: boolean): string {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) throw new Error("这篇文章没有 frontmatter，无法修改");
+
+  let fm = match[1].replace(/\r\n/g, "\n");
+  const line = `${key}: ${value}`;
+  const re = new RegExp(`^${key}:.*$`, "m");
+
+  if (re.test(fm)) fm = fm.replace(re, line);
+  else fm = `${fm}\n${line}`;
+
+  const rest = content.slice(match[0].length).replace(/^\r?\n/, "");
+  return `---\n${fm}\n---\n${rest}`;
+}
+
 async function listPosts(env: Env): Promise<Response> {
   const res = await fetch(
     `${GH_API}/repos/${env.GITHUB_REPO}/contents/${postsDir(env)}?ref=${branch(env)}`,
@@ -128,11 +160,70 @@ async function listPosts(env: Env): Promise<Response> {
     sha: string;
     type: string;
   }>;
-  const posts = items
+
+  const files = items
     .filter(item => item.type === "file" && /\.mdx?$/.test(item.name))
-    .map(item => ({ name: item.name, path: item.path, sha: item.sha }))
     .sort((a, b) => a.name.localeCompare(b.name));
+
+  // 逐篇读取，拿到标题和精选状态。文章不多时开销可接受。
+  const posts = await Promise.all(
+    files.map(async item => {
+      let meta = { title: "", featured: false, draft: false, pubDatetime: "" };
+      try {
+        const one = await fetch(
+          `${GH_API}/repos/${env.GITHUB_REPO}/contents/${item.path}?ref=${branch(env)}`,
+          { headers: ghHeaders(env) }
+        );
+        if (one.ok) {
+          const file = (await one.json()) as { content: string };
+          meta = parseMeta(fromBase64(file.content));
+        }
+      } catch {
+        // 单篇读取失败不影响列表
+      }
+      return { name: item.name, path: item.path, sha: item.sha, ...meta };
+    })
+  );
+
   return json({ posts });
+}
+
+/** 切换某篇文章的精选状态 */
+async function setFeatured(env: Env, payload: Record<string, unknown>): Promise<Response> {
+  const path = String(payload.path ?? "");
+  const featured = Boolean(payload.featured);
+  if (!path || path.includes("..")) return json({ error: "参数不合法" }, 400);
+
+  const head = await fetch(
+    `${GH_API}/repos/${env.GITHUB_REPO}/contents/${path}?ref=${branch(env)}`,
+    { headers: ghHeaders(env) }
+  );
+  if (!head.ok) return json({ error: `读取失败：GitHub ${head.status}` }, 502);
+
+  const file = (await head.json()) as { content: string; sha: string };
+  const original = fromBase64(file.content);
+  const updated = setFlag(original, "featured", featured);
+
+  const res = await fetch(`${GH_API}/repos/${env.GITHUB_REPO}/contents/${path}`, {
+    method: "PUT",
+    headers: { ...ghHeaders(env), "content-type": "application/json" },
+    body: JSON.stringify({
+      message: `${featured ? "设为精选" : "取消精选"}：${parseMeta(original).title || path}`,
+      content: toBase64(updated),
+      branch: branch(env),
+      sha: file.sha,
+    }),
+  });
+
+  if (!res.ok) return json({ error: `提交失败：GitHub ${res.status} ${await res.text()}` }, 502);
+
+  const result = (await res.json()) as { commit: { html_url: string } };
+  return json({
+    ok: true,
+    featured,
+    commit: result.commit.html_url,
+    note: "已提交，1-2 分钟后线上生效。",
+  });
 }
 
 async function readPost(env: Env, path: string): Promise<Response> {
@@ -230,6 +321,11 @@ export default {
         const path = url.searchParams.get("path");
         if (!path || path.includes("..")) return json({ error: "参数不合法" }, 400);
         return await readPost(env, path);
+      }
+
+      if (url.pathname === "/api/featured" && request.method === "POST") {
+        const payload = (await request.json()) as Record<string, unknown>;
+        return await setFeatured(env, payload);
       }
 
       if (url.pathname === "/api/publish" && request.method === "POST") {
