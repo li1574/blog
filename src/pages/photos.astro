@@ -57,41 +57,30 @@ const description = "随手拍的、存下来的、觉得值得留着的图。";
 </div>
 
 <script>
-  const grid = document.getElementById("gallery-grid") as HTMLDivElement;
-  const state = document.getElementById("gallery-state") as HTMLParagraphElement;
-  const box = document.getElementById("lightbox") as HTMLDivElement;
-  const boxImg = document.getElementById("lightbox-img") as HTMLImageElement;
-  const boxClose = document.getElementById("lightbox-close") as HTMLButtonElement;
-  const boxOpen = document.getElementById("lightbox-open") as HTMLAnchorElement;
+  // 站点用了 <ClientRouter />，站内跳转是 SPA 式的：
+  // 内联脚本只在首次加载执行一次，返回本页时不会重跑，
+  // 所以必须挂到 astro:page-load 上，每次导航后重新初始化。
+  let keydownBound = false;
 
   function formatSize(bytes: number): string {
-    if (bytes > 1024 * 1024) return `${(bytes / 1048576).toFixed(1)} MB`;
+    if (bytes >= 1024 * 1024) return `${(bytes / 1048576).toFixed(1)} MB`;
     return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   }
 
-  function openLightbox(src: string, alt: string) {
-    boxImg.src = src;
-    boxImg.alt = alt;
-    boxOpen.href = src;
-    box.classList.remove("hidden");
-    box.classList.add("flex");
-  }
-
   function closeLightbox() {
+    const box = document.getElementById("lightbox");
+    const img = document.getElementById("lightbox-img") as HTMLImageElement | null;
+    if (!box) return;
     box.classList.add("hidden");
     box.classList.remove("flex");
-    boxImg.src = "";
+    if (img) img.src = "";
   }
 
-  boxClose.addEventListener("click", closeLightbox);
-  box.addEventListener("click", e => {
-    if (e.target === box) closeLightbox();
-  });
-  document.addEventListener("keydown", e => {
-    if (e.key === "Escape" && !box.classList.contains("hidden")) closeLightbox();
-  });
-
-  async function load() {
+  async function loadPhotos(
+    grid: HTMLElement,
+    state: HTMLElement,
+    openLightbox: (src: string, alt: string) => void
+  ) {
     try {
       const res = await fetch("/api/photos", { headers: { accept: "application/json" } });
       if (!res.ok) throw new Error(`接口返回 ${res.status}`);
@@ -99,7 +88,11 @@ const description = "随手拍的、存下来的、觉得值得留着的图。";
         photos: { name: string; size: number; url: string }[];
       };
 
+      grid.innerHTML = "";
+
       if (!photos.length) {
+        state.hidden = false;
+        grid.hidden = true;
         state.textContent = "还没有图片。去后台 /admin 上传几张。";
         return;
       }
@@ -127,9 +120,50 @@ const description = "随手拍的、存下来的、觉得值得留着的图。";
         grid.appendChild(cell);
       }
     } catch (error) {
+      state.hidden = false;
       state.textContent = `加载失败：${(error as Error).message}`;
     }
   }
 
-  load();
+  function initGallery() {
+    const grid = document.getElementById("gallery-grid");
+    const state = document.getElementById("gallery-state");
+    const box = document.getElementById("lightbox");
+    const boxImg = document.getElementById("lightbox-img") as HTMLImageElement | null;
+    const boxClose = document.getElementById("lightbox-close");
+    const boxOpen = document.getElementById("lightbox-open") as HTMLAnchorElement | null;
+
+    if (!grid || !state || !box || !boxImg || !boxClose || !boxOpen) return;
+    // 同一个 DOM 只初始化一次
+    if (grid.dataset.bound === "1") return;
+    grid.dataset.bound = "1";
+
+    const openLightbox = (src: string, alt: string) => {
+      boxImg.src = src;
+      boxImg.alt = alt;
+      boxOpen.href = src;
+      box.classList.remove("hidden");
+      box.classList.add("flex");
+    };
+
+    boxClose.addEventListener("click", closeLightbox);
+    box.addEventListener("click", e => {
+      if (e.target === box) closeLightbox();
+    });
+
+    // document 不会被路由替换，只绑一次
+    if (!keydownBound) {
+      document.addEventListener("keydown", e => {
+        if (e.key !== "Escape") return;
+        const lb = document.getElementById("lightbox");
+        if (lb && !lb.classList.contains("hidden")) closeLightbox();
+      });
+      keydownBound = true;
+    }
+
+    loadPhotos(grid, state, openLightbox);
+  }
+
+  document.addEventListener("astro:page-load", initGallery);
+  initGallery();
 </script>
