@@ -5,6 +5,7 @@ export interface UIStrings {
     tags: string;
     about: string;
     photos: string;
+    music: string;
     archives: string;
     search: string;
   };

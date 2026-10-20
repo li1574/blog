@@ -1,0 +1,311 @@
+---
+import Layout from "@/layouts/Layout.astro";
+import Header from "@/components/Header.astro";
+import Breadcrumb from "@/components/Breadcrumb.astro";
+import Main from "@/components/Main.astro";
+import Footer from "@/components/Footer.astro";
+import config from "@/config";
+
+const title = "音乐";
+const description = "放在这个站上的曲子。";
+---
+
+<Layout title={`${title} | ${config.site.title}`} description={description}>
+  <Header />
+
+  <Breadcrumb />
+
+  <Main pageTitle={title} class="app-prose">
+    <p class="text-muted-foreground -mt-2 mb-6 text-sm">
+      音频存在仓库的 Release 里，播放走 Cloudflare 边缘节点，支持拖动进度。
+    </p>
+
+    <div class="not-prose">
+      <p id="track-state" class="text-muted-foreground text-sm">正在加载…</p>
+      <ul id="track-list" class="divide-border border-border mt-2 hidden divide-y border-y"></ul>
+    </div>
+
+    <div class="h-24"></div>
+  </Main>
+
+  <Footer />
+</Layout>
+
+<div
+  id="player-bar"
+  class="border-border bg-background/95 fixed inset-x-0 bottom-0 z-40 hidden border-t backdrop-blur"
+>
+  <div class="mx-auto flex max-w-3xl items-center gap-3 px-4 py-3">
+    <button
+      id="prev"
+      type="button"
+      class="text-muted-foreground hover:text-accent flex size-9 items-center justify-center rounded-md"
+      aria-label="上一首"
+    >
+      <svg viewBox="0 0 24 24" class="size-4" fill="currentColor" aria-hidden="true">
+        <path d="M6 5h2v14H6zM20 5v14L9 12z"></path>
+      </svg>
+    </button>
+
+    <button
+      id="play"
+      type="button"
+      class="bg-accent text-accent-foreground flex size-10 items-center justify-center rounded-full"
+      aria-label="播放"
+    >
+      <svg id="icon-play" viewBox="0 0 24 24" class="size-4" fill="currentColor" aria-hidden="true">
+        <path d="M8 5v14l11-7z"></path>
+      </svg>
+      <svg
+        id="icon-pause"
+        viewBox="0 0 24 24"
+        class="hidden size-4"
+        fill="currentColor"
+        aria-hidden="true"
+      >
+        <path d="M7 5h4v14H7zM13 5h4v14h-4z"></path>
+      </svg>
+    </button>
+
+    <button
+      id="next"
+      type="button"
+      class="text-muted-foreground hover:text-accent flex size-9 items-center justify-center rounded-md"
+      aria-label="下一首"
+    >
+      <svg viewBox="0 0 24 24" class="size-4" fill="currentColor" aria-hidden="true">
+        <path d="M16 5h2v14h-2zM4 5v14l11-7z"></path>
+      </svg>
+    </button>
+
+    <div class="min-w-0 flex-1">
+      <div id="now-title" class="truncate text-sm font-medium"></div>
+      <div class="text-muted-foreground flex items-center gap-2 text-xs">
+        <span id="cur-time" class="tabular-nums">0:00</span>
+        <input
+          id="seek"
+          type="range"
+          min="0"
+          max="1000"
+          value="0"
+          class="accent-accent h-1 flex-1 cursor-pointer"
+          aria-label="播放进度"
+        />
+        <span id="dur-time" class="tabular-nums">0:00</span>
+      </div>
+    </div>
+
+    <input
+      id="volume"
+      type="range"
+      min="0"
+      max="100"
+      value="100"
+      class="accent-accent hidden h-1 w-20 cursor-pointer sm:block"
+      aria-label="音量"
+    />
+  </div>
+</div>
+
+<script>
+  // 与图片页同理：站点用 ClientRouter，内联脚本只在首次加载执行，
+  // 必须挂 astro:page-load 才能在返回本页时重新初始化。
+  const AUDIO_MIME: Record<string, string> = {
+    mp3: "audio/mpeg",
+    flac: "audio/flac",
+    wav: "audio/wav",
+    m4a: "audio/mp4",
+    aac: "audio/aac",
+    ogg: "audio/ogg",
+    oga: "audio/ogg",
+    opus: "audio/ogg",
+    aiff: "audio/aiff",
+    aif: "audio/aiff",
+  };
+
+  type Track = { name: string; title: string; size: number; url: string };
+
+  let tracks: Track[] = [];
+  let current = -1;
+  let audio: HTMLAudioElement | null = null;
+  let seeking = false;
+
+  function fmt(seconds: number): string {
+    if (!isFinite(seconds) || seconds < 0) return "0:00";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  function sizeText(bytes: number): string {
+    return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
+  }
+
+  function extOf(name: string): string {
+    return (name.split(".").pop() || "").toLowerCase();
+  }
+
+  function initPlayer() {
+    const list = document.getElementById("track-list");
+    const state = document.getElementById("track-state");
+    const bar = document.getElementById("player-bar");
+    if (!list || !state || !bar) return;
+    if (list.dataset.bound === "1") return;
+    list.dataset.bound = "1";
+
+    const playBtn = document.getElementById("play") as HTMLButtonElement;
+    const prevBtn = document.getElementById("prev") as HTMLButtonElement;
+    const nextBtn = document.getElementById("next") as HTMLButtonElement;
+    const titleEl = document.getElementById("now-title") as HTMLElement;
+    const curEl = document.getElementById("cur-time") as HTMLElement;
+    const durEl = document.getElementById("dur-time") as HTMLElement;
+    const seek = document.getElementById("seek") as HTMLInputElement;
+    const vol = document.getElementById("volume") as HTMLInputElement;
+    const iconPlay = document.getElementById("icon-play") as HTMLElement;
+    const iconPause = document.getElementById("icon-pause") as HTMLElement;
+
+    if (!playBtn || !prevBtn || !nextBtn || !titleEl || !curEl || !durEl || !seek || !vol) return;
+
+    if (!audio) {
+      audio = new Audio();
+      audio.preload = "metadata";
+    }
+    const el = audio;
+
+    const setPlaying = (on: boolean) => {
+      iconPlay.classList.toggle("hidden", on);
+      iconPause.classList.toggle("hidden", !on);
+      playBtn.setAttribute("aria-label", on ? "暂停" : "播放");
+      list.querySelectorAll("li").forEach((li, i) => {
+        li.classList.toggle("text-accent", i === current);
+      });
+    };
+
+    const playAt = async (index: number) => {
+      if (!tracks.length) return;
+      current = (index + tracks.length) % tracks.length;
+      const track = tracks[current];
+      el.src = track.url;
+      titleEl.textContent = track.title;
+      bar.classList.remove("hidden");
+      curEl.textContent = "0:00";
+      durEl.textContent = "0:00";
+      seek.value = "0";
+      try {
+        await el.play();
+      } catch {
+        setPlaying(false);
+      }
+    };
+
+    el.addEventListener("play", () => setPlaying(true));
+    el.addEventListener("pause", () => setPlaying(false));
+    el.addEventListener("ended", () => playAt(current + 1));
+    el.addEventListener("loadedmetadata", () => {
+      durEl.textContent = fmt(el.duration);
+    });
+    el.addEventListener("timeupdate", () => {
+      curEl.textContent = fmt(el.currentTime);
+      if (!seeking && el.duration) {
+        seek.value = String(Math.round((el.currentTime / el.duration) * 1000));
+      }
+    });
+    el.addEventListener("error", () => {
+      state.hidden = false;
+      state.textContent = `这首放不了：${tracks[current]?.title ?? ""}（浏览器不支持该格式，或文件已删除）`;
+    });
+
+    playBtn.addEventListener("click", () => {
+      if (current < 0) return playAt(0);
+      if (el.paused) el.play().catch(() => {});
+      else el.pause();
+    });
+    prevBtn.addEventListener("click", () => playAt(current < 0 ? 0 : current - 1));
+    nextBtn.addEventListener("click", () => playAt(current < 0 ? 0 : current + 1));
+
+    seek.addEventListener("input", () => {
+      seeking = true;
+      if (el.duration) curEl.textContent = fmt((Number(seek.value) / 1000) * el.duration);
+    });
+    seek.addEventListener("change", () => {
+      if (el.duration) el.currentTime = (Number(seek.value) / 1000) * el.duration;
+      seeking = false;
+    });
+    vol.addEventListener("input", () => {
+      el.volume = Number(vol.value) / 100;
+    });
+
+    loadTracks(list, state, playAt);
+  }
+
+  async function loadTracks(
+    list: HTMLElement,
+    state: HTMLElement,
+    playAt: (index: number) => void
+  ) {
+    try {
+      const res = await fetch("/api/music", { headers: { accept: "application/json" } });
+      if (!res.ok) throw new Error(`接口返回 ${res.status}`);
+      const data = (await res.json()) as { tracks: Track[] };
+      tracks = data.tracks;
+
+      list.innerHTML = "";
+
+      if (!tracks.length) {
+        state.hidden = false;
+        list.hidden = true;
+        state.textContent = "还没有曲子。去后台 /admin 上传。";
+        return;
+      }
+
+      state.hidden = true;
+      list.hidden = false;
+
+      const probe = document.createElement("audio");
+
+      tracks.forEach((track, index) => {
+        const ext = extOf(track.name);
+        const mime = AUDIO_MIME[ext] ?? "";
+        const playable = mime ? probe.canPlayType(mime) !== "" : false;
+
+        const li = document.createElement("li");
+        li.className = "hover:bg-muted/40 flex cursor-pointer items-center gap-3 px-1 py-3";
+        li.dataset.index = String(index);
+
+        const num = document.createElement("span");
+        num.className = "text-muted-foreground w-6 text-right text-xs tabular-nums";
+        num.textContent = String(index + 1).padStart(2, "0");
+
+        const main = document.createElement("div");
+        main.className = "min-w-0 flex-1";
+
+        const name = document.createElement("div");
+        name.className = "truncate text-sm font-medium";
+        name.textContent = track.title;
+
+        const meta = document.createElement("div");
+        meta.className = "text-muted-foreground text-xs";
+        meta.textContent = `${ext.toUpperCase()} · ${sizeText(track.size)}${
+          playable ? "" : " · 当前浏览器不支持"
+        }`;
+
+        main.append(name, meta);
+        li.append(num, main);
+
+        if (playable) {
+          li.addEventListener("click", () => playAt(index));
+        } else {
+          li.className = "flex items-center gap-3 px-1 py-3 opacity-50";
+        }
+
+        list.appendChild(li);
+      });
+    } catch (error) {
+      state.hidden = false;
+      state.textContent = `加载失败：${(error as Error).message}`;
+    }
+  }
+
+  document.addEventListener("astro:page-load", initPlayer);
+  initPlayer();
+</script>

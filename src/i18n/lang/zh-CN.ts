@@ -7,6 +7,7 @@ export default {
     tags: "标签",
     about: "关于",
     photos: "图片",
+    music: "音乐",
     archives: "归档",
     search: "搜索",
   },

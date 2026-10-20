@@ -23,9 +23,11 @@ interface Env {
   POSTS_DIR?: string;
   IMAGE_BRANCH?: string;
   IMAGE_DIR?: string;
+  MUSIC_TAG?: string;
 }
 
 const GH_API = "https://api.github.com";
+const GH_UPLOAD = "https://uploads.github.com";
 
 /** 允许上传的图片格式，键是扩展名，值是 Content-Type */
 const IMAGE_TYPES: Record<string, string> = {
@@ -41,6 +43,23 @@ const IMAGE_TYPES: Record<string, string> = {
 
 /** 单张图片上限（前端会先压缩，这里只是兜底） */
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+
+/** 允许上传的音频格式 */
+const AUDIO_TYPES: Record<string, string> = {
+  mp3: "audio/mpeg",
+  flac: "audio/flac",
+  wav: "audio/wav",
+  m4a: "audio/mp4",
+  aac: "audio/aac",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  opus: "audio/ogg",
+  aiff: "audio/aiff",
+  aif: "audio/aiff",
+};
+
+/** 单个音频上限 50MB */
+const MAX_AUDIO_BYTES = 50 * 1024 * 1024;
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -566,9 +585,234 @@ async function deletePost(env: Env, path: string): Promise<Response> {
   return json({ ok: true, title, note: "已提交删除，1-2 分钟后线上消失。" });
 }
 
+/* ============================================================
+ * 音乐库
+ *
+ * 音频不走 Contents API：50MB 的文件 base64 编码后是 67MB，
+ * Worker 的 128MB 内存装不下两份。改用 GitHub Releases：
+ * 上传是原始二进制流式转发（内存恒定），播放走 Release 资产，
+ * GitHub 的 CDN 支持 Range，拖动进度条没问题。
+ * ============================================================ */
+
+function musicTag(env: Env): string {
+  return env.MUSIC_TAG ?? "music";
+}
+
+/** 文件名去掉扩展名，就是曲名 */
+function stemOf(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+/**
+ * Release 资产名只接受 ASCII：中文会被 GitHub 直接丢掉，
+ * 结果变成 default.wav，第二次上传还会撞名报 already_exists。
+ * 所以资产名转成 ASCII，原始曲名放进 label 字段。
+ */
+function asciiAssetName(name: string): string {
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  const clean =
+    stem
+      .replace(/[^\x20-\x7E]/g, "-")
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^[-.]+|[-.]+$/g, "")
+      .slice(0, 50) || `track-${Date.now().toString(36)}`;
+  return ext ? `${clean}.${ext}` : clean;
+}
+
+type ReleaseAsset = { id: number; name: string; size: number; label?: string | null };
+
+async function listAssets(env: Env, releaseId: number): Promise<ReleaseAsset[]> {
+  const res = await fetch(
+    `${GH_API}/repos/${env.GITHUB_REPO}/releases/${releaseId}/assets?per_page=100`,
+    { headers: ghHeaders(env) }
+  );
+  if (!res.ok) return [];
+  return (await res.json()) as ReleaseAsset[];
+}
+
+/** 拿到（必要时创建）音乐库 Release */
+async function musicRelease(env: Env): Promise<{ id: number } | null> {
+  const tag = musicTag(env);
+  const res = await fetch(`${GH_API}/repos/${env.GITHUB_REPO}/releases/tags/${tag}`, {
+    headers: ghHeaders(env),
+  });
+  if (res.ok) return (await res.json()) as { id: number };
+  if (res.status !== 404) return null;
+
+  const created = await fetch(`${GH_API}/repos/${env.GITHUB_REPO}/releases`, {
+    method: "POST",
+    headers: { ...ghHeaders(env), "content-type": "application/json" },
+    body: JSON.stringify({
+      tag_name: tag,
+      name: "音乐库",
+      body: "本站音乐播放器的音频文件，由后台上传维护。",
+      target_commitish: branch(env),
+    }),
+  });
+  if (!created.ok) return null;
+  return (await created.json()) as { id: number };
+}
+
+/** 公开：曲目列表 */
+async function listTracks(env: Env): Promise<Response> {
+  const rel = await musicRelease(env);
+  if (!rel) return json({ error: "音乐库不可用" }, 502);
+
+  const assets = await listAssets(env, rel.id);
+  const tracks = assets
+    .filter(asset => AUDIO_TYPES[extOf(asset.name)])
+    .map(asset => ({
+      name: asset.name,
+      title: (asset.label && asset.label.trim()) || stemOf(asset.name),
+      size: asset.size,
+      url: `/audio/${encodeURIComponent(asset.name)}`,
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title, "zh-CN"));
+
+  return json({ tracks });
+}
+
+/** 上传：原始二进制流式转发给 GitHub，不经过 base64 */
+async function uploadTrack(env: Env, request: Request): Promise<Response> {
+  const rawName = decodeURIComponent(request.headers.get("x-file-name") ?? "");
+  if (!rawName) return json({ error: "缺少文件名" }, 400);
+
+  const name = safeImageName(rawName);
+  const ext = extOf(name);
+  const type = AUDIO_TYPES[ext];
+  if (!type) {
+    return json(
+      { error: `不支持的音频格式：${ext || "未知"}（支持 ${Object.keys(AUDIO_TYPES).join(" / ")}）` },
+      415
+    );
+  }
+
+  const length = Number(request.headers.get("content-length") ?? 0);
+  if (!length) return json({ error: "缺少 Content-Length，无法确认文件大小" }, 411);
+  if (length > MAX_AUDIO_BYTES) {
+    return json({ error: `音频 ${(length / 1048576).toFixed(1)}MB，超过 50MB 上限` }, 413);
+  }
+  if (!request.body) return json({ error: "请求没有内容" }, 400);
+
+  const rel = await musicRelease(env);
+  if (!rel) return json({ error: "音乐库创建失败，请检查令牌权限" }, 500);
+
+  // 资产名只能是 ASCII，中文原名进 label
+  const title = stemOf(name);
+  const base = asciiAssetName(name);
+  const baseStem = stemOf(base);
+
+  const assets = await listAssets(env, rel.id);
+  let assetName = base;
+  for (let i = 2; i < 100 && assets.some(a => a.name === assetName); i++) {
+    assetName = `${baseStem}-${i}.${ext}`;
+  }
+
+  const res = await fetch(
+    `${GH_UPLOAD}/repos/${env.GITHUB_REPO}/releases/${rel.id}/assets?name=${encodeURIComponent(assetName)}&label=${encodeURIComponent(title)}`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.GITHUB_TOKEN}`,
+        "content-type": type,
+        "content-length": String(length),
+        "user-agent": "li1574-blog-publisher",
+        accept: "application/vnd.github+json",
+      },
+      body: request.body,
+      // Node/undici 需要这个字段，Workers 运行时忽略
+      duplex: "half",
+    } as RequestInit
+  );
+
+  if (!res.ok) {
+    return json({ error: `上传失败：GitHub ${res.status} ${await res.text()}` }, 502);
+  }
+
+  const asset = (await res.json()) as { name: string; size: number };
+  return json({
+    ok: true,
+    name: asset.name,
+    title,
+    size: asset.size,
+  });
+}
+
+/** 删除曲目 */
+async function deleteTrack(env: Env, rawName: string): Promise<Response> {
+  const clean = decodeURIComponent(rawName);
+  if (!clean || clean.includes("..")) return json({ error: "参数不合法" }, 400);
+
+  const rel = await musicRelease(env);
+  if (!rel) return json({ error: "音乐库不可用" }, 502);
+
+  const asset = (await listAssets(env, rel.id)).find(a => a.name === clean);
+  if (!asset) return json({ error: "曲目不存在" }, 404);
+
+  const res = await fetch(`${GH_API}/repos/${env.GITHUB_REPO}/releases/assets/${asset.id}`, {
+    method: "DELETE",
+    headers: ghHeaders(env),
+  });
+  if (!res.ok) return json({ error: `删除失败：GitHub ${res.status}` }, 502);
+  return json({ ok: true, note: "已删除。" });
+}
+
+/**
+ * 公开：音频代理。
+ * 直接转发到 Release 资产地址，并把 Range 头原样带上，
+ * 这样浏览器可以拖动进度条（206 Partial Content）。
+ */
+async function serveAudio(env: Env, rawName: string, request: Request): Promise<Response> {
+  let clean: string;
+  try {
+    clean = decodeURIComponent(rawName);
+  } catch {
+    return new Response("Bad request", { status: 400 });
+  }
+  if (!clean || clean.includes("..") || clean.includes("/")) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const type = AUDIO_TYPES[extOf(clean)];
+  if (!type) return new Response("Unsupported", { status: 415 });
+
+  const source = `https://github.com/${env.GITHUB_REPO}/releases/download/${musicTag(env)}/${encodeURIComponent(clean)}`;
+  const range = request.headers.get("range");
+
+  const upstream = await fetch(source, {
+    headers: range ? { range } : {},
+    redirect: "follow",
+  });
+
+  if (!upstream.ok && upstream.status !== 206) {
+    return new Response("Not found", { status: upstream.status === 404 ? 404 : 502 });
+  }
+
+  const headers = new Headers();
+  headers.set("content-type", type);
+  headers.set("accept-ranges", "bytes");
+  headers.set("cache-control", "public, max-age=604800");
+  for (const key of ["content-length", "content-range", "etag", "last-modified"]) {
+    const value = upstream.headers.get(key);
+    if (value) headers.set(key, value);
+  }
+
+  return new Response(upstream.body, { status: upstream.status, headers });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // 音频代理：公开可读，转发 Range 支持拖动进度条
+    if (url.pathname.startsWith("/audio/")) {
+      if (!env.GITHUB_TOKEN) return new Response("服务端未配置", { status: 500 });
+      return await serveAudio(env, url.pathname.slice("/audio/".length), request);
+    }
 
     // 图片代理：公开可读，带边缘缓存
     if (url.pathname.startsWith("/img/")) {
@@ -584,9 +828,21 @@ export default {
       return json({ error: "服务端未配置 GITHUB_TOKEN / ADMIN_PASSWORD" }, 500);
     }
 
-    // 公开只读接口，图片浏览页要用
+    // 公开只读接口，图片浏览页和音乐播放器要用
     if (url.pathname === "/api/photos" && request.method === "GET") {
-      return await listPhotos(env);
+      try {
+        return await listPhotos(env);
+      } catch (error) {
+        return json({ error: `内部错误：${(error as Error).message}` }, 500);
+      }
+    }
+
+    if (url.pathname === "/api/music" && request.method === "GET") {
+      try {
+        return await listTracks(env);
+      } catch (error) {
+        return json({ error: `内部错误：${(error as Error).message}` }, 500);
+      }
     }
 
     // 以下都要口令
@@ -631,6 +887,16 @@ export default {
         const name = url.searchParams.get("name");
         if (!name) return json({ error: "缺少 name 参数" }, 400);
         return await deletePhoto(env, name);
+      }
+
+      if (url.pathname === "/api/music" && request.method === "POST") {
+        return await uploadTrack(env, request);
+      }
+
+      if (url.pathname === "/api/music" && request.method === "DELETE") {
+        const name = url.searchParams.get("name");
+        if (!name) return json({ error: "缺少 name 参数" }, 400);
+        return await deleteTrack(env, name);
       }
 
       return json({ error: "Not Found" }, 404);

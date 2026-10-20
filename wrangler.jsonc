@@ -7,14 +7,15 @@
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "404-page",
-    "run_worker_first": ["/api/*", "/img/*"]
+    "run_worker_first": ["/api/*", "/img/*", "/audio/*"]
   },
   "vars": {
     "GITHUB_REPO": "li1574/blog",
     "GITHUB_BRANCH": "main",
     "POSTS_DIR": "src/content/posts",
     "IMAGE_BRANCH": "images",
-    "IMAGE_DIR": "images"
+    "IMAGE_DIR": "images",
+    "MUSIC_TAG": "music"
   },
   "observability": {
     "enabled": true

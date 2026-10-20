@@ -192,6 +192,22 @@
         <div id="photoGrid" class="pgrid"></div>
         <div class="status" id="photoStatus"></div>
       </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>音乐</h2>
+          <span class="hint">存到仓库 Release，不进构建</span>
+        </div>
+        <div class="field">
+          <label for="audioFiles">上传</label>
+          <input id="audioFiles" type="file" accept="audio/*" multiple />
+          <div class="hint">
+            mp3 / flac / wav / m4a / aac / ogg / opus / aiff，单个上限 50MB，曲名取文件名
+          </div>
+        </div>
+        <div id="musicList" class="flist"></div>
+        <div class="status" id="musicStatus"></div>
+      </div>
     </div>
 
     <script>
@@ -205,6 +221,7 @@
         featuredStatus: $("featuredStatus"),
         deletePost: $("deletePost"), files: $("files"),
         photoGrid: $("photoGrid"), photoStatus: $("photoStatus"),
+        audioFiles: $("audioFiles"), musicList: $("musicList"), musicStatus: $("musicStatus"),
       };
 
       let dirty = false;
@@ -504,6 +521,110 @@
         }
       }
 
+      function setMusicStatus(text, kind = "") {
+        els.musicStatus.className = "status" + (kind ? " " + kind : "");
+        els.musicStatus.textContent = text;
+      }
+
+      function renderMusic(tracks) {
+        els.musicList.innerHTML = "";
+        if (!tracks.length) {
+          els.musicList.innerHTML = '<p class="hint">还没有曲子。</p>';
+          return;
+        }
+        for (const track of tracks) {
+          const row = document.createElement("div");
+          row.className = "frow";
+
+          const title = document.createElement("span");
+          title.className = "ftitle";
+          title.textContent = track.title;
+
+          const meta = document.createElement("span");
+          meta.className = "fmeta";
+          meta.textContent = formatBytes(track.size);
+
+          const del = document.createElement("button");
+          del.textContent = "删除";
+          del.className = "danger";
+          del.style.padding = "2px 8px";
+          del.style.fontSize = "12px";
+          del.addEventListener("click", () => removeTrack(track.name));
+
+          row.append(title, meta, del);
+          els.musicList.appendChild(row);
+        }
+      }
+
+      async function loadMusic() {
+        if (!els.pw.value) return;
+        try {
+          const { tracks } = await api("/api/music");
+          renderMusic(tracks);
+        } catch (error) {
+          setMusicStatus("读取曲目失败：" + error.message, "err");
+        }
+      }
+
+      function uploadAudioFile(file) {
+        return new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/api/music");
+          xhr.setRequestHeader("x-admin-password", els.pw.value);
+          xhr.setRequestHeader("x-file-name", encodeURIComponent(file.name));
+          xhr.setRequestHeader("content-type", file.type || "application/octet-stream");
+          xhr.upload.onprogress = e => {
+            if (e.lengthComputable) {
+              const pct = Math.round((e.loaded / e.total) * 100);
+              setMusicStatus(`上传 ${file.name} … ${pct}%（${formatBytes(e.loaded)} / ${formatBytes(e.total)}）`);
+            }
+          };
+          xhr.onload = () => {
+            let data = {};
+            try {
+              data = JSON.parse(xhr.responseText);
+            } catch {}
+            if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+            else reject(new Error(data.error || `HTTP ${xhr.status}`));
+          };
+          xhr.onerror = () => reject(new Error("网络错误"));
+          xhr.send(file);
+        });
+      }
+
+      async function uploadAudio(files) {
+        if (!els.pw.value) return setMusicStatus("先填发文口令。", "err");
+        const list = [...files];
+        if (!list.length) return;
+
+        for (let i = 0; i < list.length; i++) {
+          const file = list[i];
+          setMusicStatus(`准备上传 ${i + 1}/${list.length}：${file.name}`);
+          try {
+            await uploadAudioFile(file);
+          } catch (error) {
+            setMusicStatus(`第 ${i + 1} 首失败：${error.message}`, "err");
+            return;
+          }
+        }
+
+        els.audioFiles.value = "";
+        await loadMusic();
+        setMusicStatus(`已上传 ${list.length} 首`, "ok");
+      }
+
+      async function removeTrack(name) {
+        if (!confirm(`确定删除《${name}》？`)) return;
+        setMusicStatus("正在删除…");
+        try {
+          await api("/api/music?name=" + encodeURIComponent(name), { method: "DELETE" });
+          await loadMusic();
+          setMusicStatus("已删除。", "ok");
+        } catch (error) {
+          setMusicStatus("删除失败：" + error.message, "err");
+        }
+      }
+
       async function removePost() {
         if (!currentPath) return;
         const item = allPosts.find(p => p.path === currentPath);
@@ -609,9 +730,10 @@
         setStatus("");
       }
 
-      els.pw.addEventListener("change", () => { loadList(); loadPhotos(); });
-      els.pw.addEventListener("blur", () => { loadList(); loadPhotos(); });
+      els.pw.addEventListener("change", () => { loadList(); loadPhotos(); loadMusic(); });
+      els.pw.addEventListener("blur", () => { loadList(); loadPhotos(); loadMusic(); });
       els.files.addEventListener("change", e => uploadFiles(e.target.files));
+      els.audioFiles.addEventListener("change", e => uploadAudio(e.target.files));
       els.deletePost.addEventListener("click", removePost);
       els.featuredList.addEventListener("change", e => {
         const box = e.target.closest('input[type="checkbox"]');
