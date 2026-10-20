@@ -145,104 +145,151 @@ const description = "放在这个站上的曲子。";
     return (name.split(".").pop() || "").toLowerCase();
   }
 
-  function initPlayer() {
-    const list = document.getElementById("track-list");
-    const state = document.getElementById("track-state");
-    const bar = document.getElementById("player-bar");
-    if (!list || !state || !bar) return;
-    if (list.dataset.bound === "1") return;
-    list.dataset.bound = "1";
+  type Ui = {
+    list: HTMLElement;
+    state: HTMLElement;
+    bar: HTMLElement;
+    playBtn: HTMLButtonElement;
+    prevBtn: HTMLButtonElement;
+    nextBtn: HTMLButtonElement;
+    titleEl: HTMLElement;
+    curEl: HTMLElement;
+    durEl: HTMLElement;
+    seek: HTMLInputElement;
+    vol: HTMLInputElement;
+    iconPlay: HTMLElement;
+    iconPause: HTMLElement;
+  };
 
-    const playBtn = document.getElementById("play") as HTMLButtonElement;
-    const prevBtn = document.getElementById("prev") as HTMLButtonElement;
-    const nextBtn = document.getElementById("next") as HTMLButtonElement;
-    const titleEl = document.getElementById("now-title") as HTMLElement;
-    const curEl = document.getElementById("cur-time") as HTMLElement;
-    const durEl = document.getElementById("dur-time") as HTMLElement;
-    const seek = document.getElementById("seek") as HTMLInputElement;
-    const vol = document.getElementById("volume") as HTMLInputElement;
-    const iconPlay = document.getElementById("icon-play") as HTMLElement;
-    const iconPause = document.getElementById("icon-pause") as HTMLElement;
+  // 站内跳转会替换 DOM，所以 UI 引用必须每次初始化时刷新，
+  // 而 audio 对象和它的监听器只创建一次（音乐要跨页面继续播）。
+  let ui: Ui | null = null;
 
-    if (!playBtn || !prevBtn || !nextBtn || !titleEl || !curEl || !durEl || !seek || !vol) return;
+  function setPlaying(on: boolean) {
+    if (!ui) return;
+    ui.iconPlay.classList.toggle("hidden", on);
+    ui.iconPause.classList.toggle("hidden", !on);
+    ui.playBtn.setAttribute("aria-label", on ? "暂停" : "播放");
+    ui.list.querySelectorAll("li").forEach((li, i) => {
+      li.classList.toggle("text-accent", i === current);
+    });
+  }
 
-    if (!audio) {
-      audio = new Audio();
-      audio.preload = "metadata";
-    }
-    const el = audio;
-
-    const setPlaying = (on: boolean) => {
-      iconPlay.classList.toggle("hidden", on);
-      iconPause.classList.toggle("hidden", !on);
-      playBtn.setAttribute("aria-label", on ? "暂停" : "播放");
-      list.querySelectorAll("li").forEach((li, i) => {
-        li.classList.toggle("text-accent", i === current);
-      });
-    };
-
-    const playAt = async (index: number) => {
-      if (!tracks.length) return;
-      current = (index + tracks.length) % tracks.length;
-      const track = tracks[current];
-      el.src = track.url;
-      titleEl.textContent = track.title;
-      bar.classList.remove("hidden");
-      curEl.textContent = "0:00";
-      durEl.textContent = "0:00";
-      seek.value = "0";
-      try {
-        await el.play();
-      } catch {
-        setPlaying(false);
-      }
-    };
+  function ensureAudio(): HTMLAudioElement {
+    if (audio) return audio;
+    const el = new Audio();
+    el.preload = "metadata";
 
     el.addEventListener("play", () => setPlaying(true));
     el.addEventListener("pause", () => setPlaying(false));
     el.addEventListener("ended", () => playAt(current + 1));
     el.addEventListener("loadedmetadata", () => {
-      durEl.textContent = fmt(el.duration);
+      if (ui) ui.durEl.textContent = fmt(el.duration);
     });
     el.addEventListener("timeupdate", () => {
-      curEl.textContent = fmt(el.currentTime);
+      if (!ui) return;
+      ui.curEl.textContent = fmt(el.currentTime);
       if (!seeking && el.duration) {
-        seek.value = String(Math.round((el.currentTime / el.duration) * 1000));
+        ui.seek.value = String(Math.round((el.currentTime / el.duration) * 1000));
       }
     });
     el.addEventListener("error", () => {
-      state.hidden = false;
-      state.textContent = `这首放不了：${tracks[current]?.title ?? ""}（浏览器不支持该格式，或文件已删除）`;
+      if (!ui) return;
+      ui.state.hidden = false;
+      ui.state.textContent = `这首放不了：${tracks[current]?.title ?? ""}（浏览器不支持该格式，或文件已删除）`;
     });
 
-    playBtn.addEventListener("click", () => {
-      if (current < 0) return playAt(0);
-      if (el.paused) el.play().catch(() => {});
-      else el.pause();
-    });
-    prevBtn.addEventListener("click", () => playAt(current < 0 ? 0 : current - 1));
-    nextBtn.addEventListener("click", () => playAt(current < 0 ? 0 : current + 1));
-
-    seek.addEventListener("input", () => {
-      seeking = true;
-      if (el.duration) curEl.textContent = fmt((Number(seek.value) / 1000) * el.duration);
-    });
-    seek.addEventListener("change", () => {
-      if (el.duration) el.currentTime = (Number(seek.value) / 1000) * el.duration;
-      seeking = false;
-    });
-    vol.addEventListener("input", () => {
-      el.volume = Number(vol.value) / 100;
-    });
-
-    loadTracks(list, state, playAt);
+    audio = el;
+    return el;
   }
 
-  async function loadTracks(
-    list: HTMLElement,
-    state: HTMLElement,
-    playAt: (index: number) => void
-  ) {
+  /** 把音频的真实状态同步到当前 DOM（导航返回后 DOM 是新的） */
+  function syncUi() {
+    if (!ui || !audio || current < 0 || !tracks[current]) return;
+    ui.bar.classList.remove("hidden");
+    ui.titleEl.textContent = tracks[current].title;
+    ui.durEl.textContent = fmt(audio.duration);
+    ui.curEl.textContent = fmt(audio.currentTime);
+    if (audio.duration) {
+      ui.seek.value = String(Math.round((audio.currentTime / audio.duration) * 1000));
+    }
+    setPlaying(!audio.paused);
+  }
+
+  function playAt(index: number) {
+    if (!tracks.length) return;
+    current = (index + tracks.length) % tracks.length;
+    const el = ensureAudio();
+    el.src = tracks[current].url;
+    if (ui) {
+      ui.bar.classList.remove("hidden");
+      ui.titleEl.textContent = tracks[current].title;
+      ui.curEl.textContent = "0:00";
+      ui.durEl.textContent = "0:00";
+      ui.seek.value = "0";
+    }
+    el.play().catch(() => setPlaying(false));
+  }
+
+  function initPlayer() {
+    const list = document.getElementById("track-list");
+    const state = document.getElementById("track-state");
+    const bar = document.getElementById("player-bar");
+    const playBtn = document.getElementById("play") as HTMLButtonElement | null;
+    const prevBtn = document.getElementById("prev") as HTMLButtonElement | null;
+    const nextBtn = document.getElementById("next") as HTMLButtonElement | null;
+    const titleEl = document.getElementById("now-title");
+    const curEl = document.getElementById("cur-time");
+    const durEl = document.getElementById("dur-time");
+    const seek = document.getElementById("seek") as HTMLInputElement | null;
+    const vol = document.getElementById("volume") as HTMLInputElement | null;
+    const iconPlay = document.getElementById("icon-play");
+    const iconPause = document.getElementById("icon-pause");
+
+    if (
+      !list || !state || !bar || !playBtn || !prevBtn || !nextBtn ||
+      !titleEl || !curEl || !durEl || !seek || !vol || !iconPlay || !iconPause
+    ) {
+      return;
+    }
+    if (list.dataset.bound === "1") return;
+    list.dataset.bound = "1";
+
+    ui = {
+      list, state, bar, playBtn, prevBtn, nextBtn,
+      titleEl, curEl, durEl, seek, vol, iconPlay, iconPause,
+    };
+
+    playBtn.onclick = () => {
+      const el = ensureAudio();
+      if (current < 0) playAt(0);
+      else if (el.paused) el.play().catch(() => {});
+      else el.pause();
+    };
+    prevBtn.onclick = () => playAt(current < 0 ? 0 : current - 1);
+    nextBtn.onclick = () => playAt(current < 0 ? 0 : current + 1);
+
+    seek.oninput = () => {
+      seeking = true;
+      const el = ensureAudio();
+      if (el.duration) curEl.textContent = fmt((Number(seek.value) / 1000) * el.duration);
+    };
+    seek.onchange = () => {
+      const el = ensureAudio();
+      if (el.duration) el.currentTime = (Number(seek.value) / 1000) * el.duration;
+      seeking = false;
+    };
+    vol.oninput = () => {
+      ensureAudio().volume = Number(vol.value) / 100;
+    };
+
+    ensureAudio();
+    loadTracks();
+  }
+
+  async function loadTracks() {
+    if (!ui) return;
+    const { list, state } = ui;
     try {
       const res = await fetch("/api/music", { headers: { accept: "application/json" } });
       if (!res.ok) throw new Error(`接口返回 ${res.status}`);
@@ -269,7 +316,6 @@ const description = "放在这个站上的曲子。";
         const playable = mime ? probe.canPlayType(mime) !== "" : false;
 
         const li = document.createElement("li");
-        li.className = "hover:bg-muted/40 flex cursor-pointer items-center gap-3 px-1 py-3";
         li.dataset.index = String(index);
 
         const num = document.createElement("span");
@@ -293,6 +339,7 @@ const description = "放在这个站上的曲子。";
         li.append(num, main);
 
         if (playable) {
+          li.className = "hover:bg-muted/40 flex cursor-pointer items-center gap-3 px-1 py-3";
           li.addEventListener("click", () => playAt(index));
         } else {
           li.className = "flex items-center gap-3 px-1 py-3 opacity-50";
@@ -300,6 +347,9 @@ const description = "放在这个站上的曲子。";
 
         list.appendChild(li);
       });
+
+      // 列表重建后把正在播放的状态补回去
+      syncUi();
     } catch (error) {
       state.hidden = false;
       state.textContent = `加载失败：${(error as Error).message}`;
