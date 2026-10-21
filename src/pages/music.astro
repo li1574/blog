@@ -78,6 +78,57 @@ const description = "放在这个站上的曲子。";
       </svg>
     </button>
 
+    <button
+      id="mode"
+      type="button"
+      class="text-muted-foreground hover:text-accent flex size-9 items-center justify-center rounded-md"
+      aria-label="顺序播放"
+      title="顺序播放"
+    >
+      <svg
+        id="icon-order"
+        viewBox="0 0 24 24"
+        class="size-4"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        aria-hidden="true"
+      >
+        <path d="M4 6h16M4 12h16M4 18h10"></path>
+      </svg>
+      <svg
+        id="icon-shuffle"
+        viewBox="0 0 24 24"
+        class="hidden size-4"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"></path>
+      </svg>
+      <svg
+        id="icon-repeat"
+        viewBox="0 0 24 24"
+        class="hidden size-4"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M17 2l4 4-4 4"></path>
+        <path d="M3 11V9a4 4 0 014-4h14"></path>
+        <path d="M7 22l-4-4 4-4"></path>
+        <path d="M21 13v2a4 4 0 01-4 4H3"></path>
+        <text x="12" y="15" font-size="8" text-anchor="middle" fill="currentColor" stroke="none">1</text>
+      </svg>
+    </button>
+
     <div class="min-w-0 flex-1">
       <div id="now-title" class="truncate text-sm font-medium"></div>
       <div class="text-muted-foreground flex items-center gap-2 text-xs">
@@ -145,6 +196,8 @@ const description = "放在这个站上的曲子。";
     return (name.split(".").pop() || "").toLowerCase();
   }
 
+  type Mode = "order" | "shuffle" | "repeat";
+
   type Ui = {
     list: HTMLElement;
     state: HTMLElement;
@@ -159,7 +212,66 @@ const description = "放在这个站上的曲子。";
     vol: HTMLInputElement;
     iconPlay: HTMLElement;
     iconPause: HTMLElement;
+    modeBtn: HTMLButtonElement;
+    iconOrder: HTMLElement;
+    iconShuffle: HTMLElement;
+    iconRepeat: HTMLElement;
   };
+
+  const MODE_ORDER: Mode[] = ["order", "shuffle", "repeat"];
+  const MODE_LABEL: Record<Mode, string> = {
+    order: "顺序播放",
+    shuffle: "随机播放",
+    repeat: "单曲循环",
+  };
+
+  function loadMode(): Mode {
+    try {
+      const saved = localStorage.getItem("music-mode");
+      if (saved && MODE_ORDER.includes(saved as Mode)) return saved as Mode;
+    } catch {
+      // localStorage 不可用时忽略
+    }
+    return "order";
+  }
+
+  let mode: Mode = loadMode();
+
+  function applyMode() {
+    if (!ui) return;
+    ui.iconOrder.classList.toggle("hidden", mode !== "order");
+    ui.iconShuffle.classList.toggle("hidden", mode !== "shuffle");
+    ui.iconRepeat.classList.toggle("hidden", mode !== "repeat");
+    ui.modeBtn.setAttribute("aria-label", MODE_LABEL[mode]);
+    ui.modeBtn.title = MODE_LABEL[mode];
+    // 非顺序播放时按钮高亮，一眼看出不是默认状态
+    ui.modeBtn.classList.toggle("text-accent", mode !== "order");
+  }
+
+  function cycleMode() {
+    mode = MODE_ORDER[(MODE_ORDER.indexOf(mode) + 1) % MODE_ORDER.length];
+    try {
+      localStorage.setItem("music-mode", mode);
+    } catch {
+      // 忽略
+    }
+    applyMode();
+  }
+
+  /** 随机挑一首，尽量不重复当前这首 */
+  function randomIndex(): number {
+    if (tracks.length <= 1) return 0;
+    let next = current;
+    while (next === current) next = Math.floor(Math.random() * tracks.length);
+    return next;
+  }
+
+  /** 点「下一首」时按当前模式决定去哪首 */
+  function nextIndex(): number {
+    if (!tracks.length) return 0;
+    if (mode === "shuffle") return randomIndex();
+    return (current + 1) % tracks.length;
+  }
 
   // 站内跳转会替换 DOM，所以 UI 引用必须每次初始化时刷新，
   // 而 audio 对象和它的监听器只创建一次（音乐要跨页面继续播）。
@@ -182,7 +294,21 @@ const description = "放在这个站上的曲子。";
 
     el.addEventListener("play", () => setPlaying(true));
     el.addEventListener("pause", () => setPlaying(false));
-    el.addEventListener("ended", () => playAt(current + 1));
+    el.addEventListener("ended", () => {
+      if (mode === "repeat") {
+        el.currentTime = 0;
+        el.play().catch(() => {});
+        return;
+      }
+      if (mode === "shuffle") {
+        playAt(randomIndex());
+        return;
+      }
+      // 顺序播放：还有下一首就继续，最后一首放完就停
+      // 注意：自然播完不会触发 pause 事件，要手动把图标切回「播放」
+      if (current < tracks.length - 1) playAt(current + 1);
+      else setPlaying(false);
+    });
     el.addEventListener("loadedmetadata", () => {
       if (ui) ui.durEl.textContent = fmt(el.duration);
     });
@@ -245,10 +371,15 @@ const description = "放在这个站上的曲子。";
     const vol = document.getElementById("volume") as HTMLInputElement | null;
     const iconPlay = document.getElementById("icon-play");
     const iconPause = document.getElementById("icon-pause");
+    const modeBtn = document.getElementById("mode") as HTMLButtonElement | null;
+    const iconOrder = document.getElementById("icon-order");
+    const iconShuffle = document.getElementById("icon-shuffle");
+    const iconRepeat = document.getElementById("icon-repeat");
 
     if (
       !list || !state || !bar || !playBtn || !prevBtn || !nextBtn ||
-      !titleEl || !curEl || !durEl || !seek || !vol || !iconPlay || !iconPause
+      !titleEl || !curEl || !durEl || !seek || !vol || !iconPlay || !iconPause ||
+      !modeBtn || !iconOrder || !iconShuffle || !iconRepeat
     ) {
       return;
     }
@@ -258,7 +389,11 @@ const description = "放在这个站上的曲子。";
     ui = {
       list, state, bar, playBtn, prevBtn, nextBtn,
       titleEl, curEl, durEl, seek, vol, iconPlay, iconPause,
+      modeBtn, iconOrder, iconShuffle, iconRepeat,
     };
+
+    modeBtn.onclick = cycleMode;
+    applyMode();
 
     playBtn.onclick = () => {
       const el = ensureAudio();
@@ -267,7 +402,7 @@ const description = "放在这个站上的曲子。";
       else el.pause();
     };
     prevBtn.onclick = () => playAt(current < 0 ? 0 : current - 1);
-    nextBtn.onclick = () => playAt(current < 0 ? 0 : current + 1);
+    nextBtn.onclick = () => playAt(nextIndex());
 
     seek.oninput = () => {
       seeking = true;
