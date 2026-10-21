@@ -93,6 +93,25 @@ function fromBase64(input: string): string {
 /** JSON.stringify 产出的双引号字符串是合法 YAML 标量，顺手解决转义问题 */
 const yamlStr = (value: string) => JSON.stringify(value);
 
+/**
+ * Markdown 标题必须写成 `## 标题`，`##标题` 不会渲染成标题。
+ * 写的人常忘这个空格，发布时自动补上（跳过代码块）。
+ */
+function normalizeHeadings(text: string): string {
+  let inFence = false;
+  return text
+    .split("\n")
+    .map(line => {
+      if (/^\s*(```|~~~)/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) return line;
+      return line.replace(/^(#{1,6})([^\s#])/, "$1 $2");
+    })
+    .join("\n");
+}
+
 function ghHeaders(env: Env): HeadersInit {
   return {
     authorization: `Bearer ${env.GITHUB_TOKEN}`,
@@ -338,7 +357,7 @@ async function publish(env: Env, payload: Record<string, unknown>): Promise<Resp
   const title = String(payload.title ?? "").trim();
   const description = String(payload.description ?? "").trim();
   // 浏览器/剪贴板可能带 CRLF，统一成 LF，避免仓库里出现混合换行
-  const body = String(payload.body ?? "").replace(/\r\n?/g, "\n");
+  const body = normalizeHeadings(String(payload.body ?? "").replace(/\r\n?/g, "\n"));
   if (!title) return json({ error: "标题不能为空" }, 400);
   if (!description) return json({ error: "摘要不能为空（SEO 会用到）" }, 400);
   if (!body.trim()) return json({ error: "正文不能为空" }, 400);
