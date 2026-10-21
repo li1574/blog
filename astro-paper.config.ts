@@ -22,10 +22,8 @@ export default defineAstroPaperConfig({
     dynamicOgImage: false,
     showArchives: true,
     showBackButton: true,
-    editPost: {
-      enabled: true,
-      url: "https://github.com/li1574/blog/edit/main/",
-    },
+    // 「编辑此页」对访客没意义（只能 fork 提 PR），自己也用 /admin，关掉
+    editPost: { enabled: false },
     search: "pagefind",
   },
   socials: [
