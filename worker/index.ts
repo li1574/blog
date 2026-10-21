@@ -14,7 +14,7 @@
  *   POSTS_DIR       默认 src/content/posts
  */
 
-import { neteaseApi, csrfFrom } from "./netease";
+import { neteaseApi, csrfFrom, weapiBody } from "./netease";
 
 interface Env {
   ASSETS: { fetch: (req: Request) => Promise<Response> };
@@ -940,13 +940,54 @@ async function handleNetease(url: URL, request: Request): Promise<Response> {
     if (route === "url") {
       const id = Number(url.searchParams.get("id") ?? 0);
       if (!id) return json({ error: "缺少 id" }, 400);
-      const { data } = await neteaseApi(
+
+      const level = url.searchParams.get("level") ?? "exhigh";
+      const safeLevel = ["standard", "higher", "exhigh", "lossless"].includes(level) ? level : "exhigh";
+
+      // 新版接口支持指定音质
+      const v1 = await neteaseApi(
+        "/weapi/song/enhance/player/url/v1",
+        { ids: `[${id}]`, level: safeLevel, encodeType: safeLevel === "lossless" ? "flac" : "aac" },
+        cookie
+      );
+      const first = ((v1.data as { data?: Array<Record<string, unknown>> }).data ?? [])[0];
+      if (first?.url) {
+        return json({
+          url: first.url as string,
+          br: Number(first.br ?? 0),
+          level: String(first.level ?? safeLevel),
+        });
+      }
+
+      // 退回到老接口（不支持无损，但有时能拿到 320k）
+      const legacy = await neteaseApi(
         "/weapi/song/enhance/player/url",
         { ids: `[${id}]`, br: 320000 },
         cookie
       );
-      const first = ((data as { data?: Array<Record<string, unknown>> }).data ?? [])[0];
-      return json({ url: (first?.url as string) ?? null, br: Number(first?.br ?? 0) });
+      const fallback = ((legacy.data as { data?: Array<Record<string, unknown>> }).data ?? [])[0];
+      return json({
+        url: (fallback?.url as string) ?? null,
+        br: Number(fallback?.br ?? 0),
+        level: fallback?.url ? "exhigh" : null,
+      });
+    }
+
+    if (route === "sms/send" && request.method === "POST") {
+      const body = (await request.json()) as { phone?: string };
+      const phone = (body.phone ?? "").trim();
+      if (!/^\d{6,15}$/.test(phone)) return json({ error: "手机号格式不对" }, 400);
+
+      const { data } = await neteaseApi("/weapi/sms/captcha/sent", {
+        cellphone: phone,
+        ctcode: "86",
+      });
+      const code = Number((data as { code?: number }).code ?? 0);
+      return json({
+        ok: code === 200,
+        code,
+        message: String((data as { message?: string; msg?: string }).message ?? (data as { msg?: string }).msg ?? ""),
+      });
     }
 
     if (route === "account") {
@@ -963,16 +1004,23 @@ async function handleNetease(url: URL, request: Request): Promise<Response> {
       const body = (await request.json()) as {
         phone?: string;
         password?: string;
+        captcha?: string;
         countrycode?: string;
       };
-      if (!body.phone || !body.password) return json({ error: "手机号和密码都要填" }, 400);
+      const phone = (body.phone ?? "").trim();
+      if (!phone) return json({ error: "手机号不能为空" }, 400);
+      if (!body.password && !body.captcha) return json({ error: "要填密码或验证码" }, 400);
 
-      const { data, setCookie } = await neteaseApi("/weapi/login/cellphone", {
-        phone: body.phone,
-        password: body.password,
+      // 验证码登录和密码登录走同一个接口，区别只在于传 captcha 还是 password
+      const payload: Record<string, unknown> = {
+        phone,
         countrycode: body.countrycode ?? "86",
         rememberLogin: true,
-      });
+      };
+      if (body.captcha) payload.captcha = body.captcha;
+      else payload.password = body.password;
+
+      const { data, setCookie } = await neteaseApi("/weapi/login/cellphone", payload);
 
       const code = Number((data as { code?: number }).code ?? 0);
       if (code !== 200) {

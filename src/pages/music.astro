@@ -52,20 +52,42 @@ const description = "放在这个站上的曲子。";
       </p>
 
       <div id="ne-login" class="not-prose border-border mb-4 rounded-md border p-4">
+        <div class="mb-3 flex gap-2">
+          <button type="button" data-login="password" class="ne-login-mode rounded-md border px-3 py-1 text-xs">
+            密码登录
+          </button>
+          <button type="button" data-login="captcha" class="ne-login-mode rounded-md border px-3 py-1 text-xs">
+            验证码登录
+          </button>
+        </div>
         <div class="flex flex-wrap items-center gap-2">
           <input
             id="ne-phone"
             type="tel"
             inputmode="numeric"
             placeholder="手机号"
-            class="border-border bg-background w-40 rounded-md border px-3 py-1.5 text-sm"
+            class="border-border bg-background w-36 rounded-md border px-3 py-1.5 text-sm"
           />
           <input
             id="ne-pass"
             type="password"
             placeholder="密码"
-            class="border-border bg-background w-40 rounded-md border px-3 py-1.5 text-sm"
+            class="border-border bg-background w-36 rounded-md border px-3 py-1.5 text-sm"
           />
+          <input
+            id="ne-code"
+            type="text"
+            inputmode="numeric"
+            placeholder="验证码"
+            class="border-border bg-background hidden w-24 rounded-md border px-3 py-1.5 text-sm"
+          />
+          <button
+            id="ne-send-code"
+            type="button"
+            class="border-border hidden rounded-md border px-3 py-1.5 text-sm"
+          >
+            获取验证码
+          </button>
           <button id="ne-login-btn" type="button" class="bg-accent text-accent-foreground rounded-md px-4 py-1.5 text-sm">
             登录
           </button>
@@ -77,6 +99,19 @@ const description = "放在这个站上的曲子。";
         <img id="ne-avatar" alt="" class="size-8 rounded-full" />
         <span id="ne-name" class="text-sm"></span>
         <button id="ne-logout" type="button" class="text-muted-foreground text-xs underline">退出</button>
+      </div>
+
+      <div class="not-prose mb-3 flex flex-wrap items-center gap-2 text-sm">
+        <span class="text-muted-foreground">音质</span>
+        <select
+          id="ne-quality"
+          class="border-border bg-background rounded-md border px-2 py-1 text-sm"
+        >
+          <option value="standard">标准 128k</option>
+          <option value="higher">较高 192k</option>
+          <option value="exhigh" selected>极高 320k</option>
+          <option value="lossless">无损</option>
+        </select>
       </div>
 
       <div class="not-prose mb-3 flex flex-wrap gap-2">
@@ -435,7 +470,9 @@ const description = "放在这个站上的曲子。";
     if (!src && track.id) {
       // 网易曲目要现取播放地址，地址有时效
       try {
-        const res = await fetch(`/api/netease/url?id=${track.id}`, { headers: neteaseHeaders() });
+        const res = await fetch(`/api/netease/url?id=${track.id}&level=${neQuality}`, {
+          headers: neteaseHeaders(),
+        });
         const data = (await res.json()) as { url?: string | null };
         src = data.url ?? "";
       } catch {
@@ -614,6 +651,9 @@ const description = "放在这个站上的曲子。";
   let neTab: "recommend" | "search" | "playlists" = "recommend";
   let neSongs: NeSong[] = [];
   let source: "repo" | "netease" = "repo";
+  let neQuality = "exhigh";
+  let neLoginMode: "password" | "captcha" = "password";
+  let neCountdownTimer: number | null = null;
 
   function neSay(text: string) {
     const el = document.getElementById("ne-state");
@@ -840,12 +880,85 @@ const description = "放在这个站上的曲子。";
     }
   }
 
+  function setLoginMode(mode: "password" | "captcha") {
+    neLoginMode = mode;
+    const pass = document.getElementById("ne-pass");
+    const code = document.getElementById("ne-code");
+    const send = document.getElementById("ne-send-code");
+    pass?.classList.toggle("hidden", mode !== "password");
+    code?.classList.toggle("hidden", mode !== "captcha");
+    send?.classList.toggle("hidden", mode !== "captcha");
+
+    document.querySelectorAll<HTMLElement>(".ne-login-mode").forEach(btn => {
+      const active = btn.dataset.login === mode;
+      btn.classList.toggle("bg-accent", active);
+      btn.classList.toggle("text-accent-foreground", active);
+    });
+  }
+
+  async function sendNeteaseCode() {
+    const phone = (document.getElementById("ne-phone") as HTMLInputElement | null)?.value.trim() ?? "";
+    const msg = document.getElementById("ne-login-msg");
+    const btn = document.getElementById("ne-send-code") as HTMLButtonElement | null;
+    if (!/^\d{6,15}$/.test(phone)) {
+      if (msg) msg.textContent = "先填正确的手机号";
+      return;
+    }
+    if (btn) btn.disabled = true;
+
+    try {
+      const res = await fetch("/api/netease/sms/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ phone }),
+      });
+      const data = (await res.json()) as { ok?: boolean; message?: string; error?: string };
+      if (!data.ok) {
+        if (msg) msg.textContent = data.message || data.error || "发送失败";
+        if (btn) btn.disabled = false;
+        return;
+      }
+      if (msg) msg.textContent = "验证码已发送";
+
+      // 60 秒倒计时
+      let left = 60;
+      if (btn) btn.textContent = `${left}s 后重发`;
+      if (neCountdownTimer) window.clearInterval(neCountdownTimer);
+      neCountdownTimer = window.setInterval(() => {
+        left -= 1;
+        if (left <= 0) {
+          window.clearInterval(neCountdownTimer!);
+          neCountdownTimer = null;
+          if (btn) {
+            btn.textContent = "获取验证码";
+            btn.disabled = false;
+          }
+        } else if (btn) {
+          btn.textContent = `${left}s 后重发`;
+        }
+      }, 1000);
+    } catch (error) {
+      if (msg) msg.textContent = `发送失败：${(error as Error).message}`;
+      if (btn) btn.disabled = false;
+    }
+  }
+
   async function doNeteaseLogin() {
     const phone = (document.getElementById("ne-phone") as HTMLInputElement | null)?.value.trim() ?? "";
     const pass = (document.getElementById("ne-pass") as HTMLInputElement | null)?.value ?? "";
+    const code = (document.getElementById("ne-code") as HTMLInputElement | null)?.value.trim() ?? "";
     const msg = document.getElementById("ne-login-msg");
-    if (!phone || !pass) {
-      if (msg) msg.textContent = "手机号和密码都要填";
+
+    if (!phone) {
+      if (msg) msg.textContent = "手机号不能为空";
+      return;
+    }
+    if (neLoginMode === "password" && !pass) {
+      if (msg) msg.textContent = "密码不能为空";
+      return;
+    }
+    if (neLoginMode === "captcha" && !code) {
+      if (msg) msg.textContent = "验证码不能为空";
       return;
     }
     if (msg) msg.textContent = "登录中…";
@@ -854,7 +967,9 @@ const description = "放在这个站上的曲子。";
       const res = await fetch("/api/netease/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ phone, password: pass }),
+        body: JSON.stringify(
+          neLoginMode === "captcha" ? { phone, captcha: code } : { phone, password: pass }
+        ),
       });
       const data = (await res.json()) as {
         cookie?: string;
@@ -934,6 +1049,37 @@ const description = "放在这个站上的曲子。";
 
     const loginBtn = document.getElementById("ne-login-btn");
     if (loginBtn) loginBtn.onclick = () => void doNeteaseLogin();
+
+    document.querySelectorAll<HTMLElement>(".ne-login-mode").forEach(btn => {
+      btn.onclick = () => setLoginMode(btn.dataset.login === "captcha" ? "captcha" : "password");
+    });
+    setLoginMode(neLoginMode);
+
+    const sendCode = document.getElementById("ne-send-code");
+    if (sendCode) sendCode.onclick = () => void sendNeteaseCode();
+
+    // 音质：读本地保存的选择
+    try {
+      const savedQuality = localStorage.getItem("netease-quality");
+      if (savedQuality && ["standard", "higher", "exhigh", "lossless"].includes(savedQuality)) {
+        neQuality = savedQuality;
+      }
+    } catch {
+      // 忽略
+    }
+    const quality = document.getElementById("ne-quality") as HTMLSelectElement | null;
+    if (quality) {
+      quality.value = neQuality;
+      quality.onchange = () => {
+        neQuality = quality.value;
+        try {
+          localStorage.setItem("netease-quality", neQuality);
+        } catch {
+          // 忽略
+        }
+        neSay(`音质已切到 ${quality.options[quality.selectedIndex].text}，下一首生效`);
+      };
+    }
 
     const searchBtn = document.getElementById("ne-search-btn");
     if (searchBtn) {
