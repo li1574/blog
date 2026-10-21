@@ -189,6 +189,30 @@ const description = "放在这个站上的曲子。";
     </button>
 
     <button
+      id="like"
+      type="button"
+      class="text-muted-foreground hover:text-accent size-9 items-center justify-center rounded-md"
+      style="display: none"
+      aria-label="喜欢"
+      title="喜欢"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        class="size-4"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path
+          d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 00-7.8 7.8l1 1.1L12 21.2l7.8-7.7 1-1.1a5.5 5.5 0 000-7.8z"
+        ></path>
+      </svg>
+    </button>
+
+    <button
       id="mode"
       type="button"
       class="text-muted-foreground hover:text-accent flex size-9 items-center justify-center rounded-md"
@@ -495,6 +519,7 @@ const description = "放在这个站上的曲子。";
       ui.seek.value = "0";
     }
     el.play().catch(() => setPlaying(false));
+    syncLikeButton();
   }
 
   function initPlayer() {
@@ -652,6 +677,7 @@ const description = "放在这个站上的曲子。";
   let neSongs: NeSong[] = [];
   let source: "repo" | "netease" = "repo";
   let neQuality = "exhigh";
+  let likedIds = new Set<number>();
   let neLoginMode: "password" | "captcha" = "password";
   let neCountdownTimer: number | null = null;
 
@@ -713,6 +739,64 @@ const description = "放在这个站上的曲子。";
     if (loggedIn && neProfile) {
       if (avatar) avatar.src = neProfile.avatar;
       if (name) name.textContent = neProfile.nickname;
+    }
+  }
+
+  async function loadLiked() {
+    if (!neCookie || !neProfile) {
+      likedIds = new Set();
+      return;
+    }
+    try {
+      const data = await neGet(`liked?uid=${neProfile.uid}`);
+      likedIds = new Set(((data.ids ?? []) as number[]).map(Number));
+    } catch {
+      likedIds = new Set();
+    }
+  }
+
+  /** 心形按钮只在「登录 + 正在放网易曲目」时出现 */
+  function syncLikeButton() {
+    const btn = document.getElementById("like") as HTMLButtonElement | null;
+    if (!btn) return;
+    const track = tracks[current];
+    const show = queueSource === "netease" && Boolean(neCookie) && Boolean(track?.id);
+    btn.style.display = show ? "flex" : "none";
+
+    const liked = show && track?.id ? likedIds.has(track.id) : false;
+    btn.classList.toggle("text-red-500", liked);
+    btn.classList.toggle("text-muted-foreground", !liked);
+    btn.setAttribute("aria-label", liked ? "取消喜欢" : "喜欢");
+    btn.title = liked ? "取消喜欢" : "喜欢";
+    const svg = btn.querySelector("svg");
+    if (svg) svg.setAttribute("fill", liked ? "currentColor" : "none");
+  }
+
+  async function toggleLike() {
+    const track = tracks[current];
+    if (!track?.id) return;
+    if (!neCookie) {
+      neSay("喜欢歌曲需要先登录。");
+      return;
+    }
+    const next = !likedIds.has(track.id);
+    try {
+      const res = await fetch("/api/netease/like", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...neteaseHeaders() },
+        body: JSON.stringify({ id: track.id, like: next }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string; code?: number };
+      if (!res.ok || !data.ok) {
+        neSay(`喜欢失败：${data.error ?? `HTTP ${res.status}`}`);
+        return;
+      }
+      if (next) likedIds.add(track.id);
+      else likedIds.delete(track.id);
+      syncLikeButton();
+      neSay(next ? "已加入「我喜欢的音乐」" : "已取消喜欢");
+    } catch (error) {
+      neSay(`喜欢失败：${(error as Error).message}`);
     }
   }
 
@@ -985,6 +1069,8 @@ const description = "放在这个站上的曲子。";
       saveNeteaseAuth();
       if (msg) msg.textContent = "";
       renderNeUser();
+      await loadLiked();
+      syncLikeButton();
       neSay("登录成功。");
       void loadNeTab(neTab === "playlists" ? "playlists" : "recommend");
     } catch (error) {
@@ -1057,6 +1143,12 @@ const description = "放在这个站上的曲子。";
 
     const sendCode = document.getElementById("ne-send-code");
     if (sendCode) sendCode.onclick = () => void sendNeteaseCode();
+
+    const likeBtn = document.getElementById("like");
+    if (likeBtn) likeBtn.onclick = () => void toggleLike();
+    if (neCookie && neProfile) {
+      void loadLiked().then(syncLikeButton);
+    }
 
     // 音质：读本地保存的选择
     try {

@@ -1000,6 +1000,54 @@ async function handleNetease(url: URL, request: Request): Promise<Response> {
       });
     }
 
+    if (route === "liked") {
+      if (!cookie) return json({ ids: [] });
+      const uid = url.searchParams.get("uid");
+      if (!uid) return json({ ids: [] });
+
+      const pl = await neteaseApi(
+        "/weapi/user/playlist",
+        { uid, limit: 1000, offset: 0, csrf_token: csrf },
+        cookie
+      );
+      const list = ((pl.data as { playlist?: Array<Record<string, unknown>> }).playlist ?? []) as Array<
+        Record<string, unknown>
+      >;
+      const liked = list.find(p => Number(p.specialType) === 5);
+      if (!liked) return json({ ids: [] });
+
+      const detail = await neteaseApi(
+        "/weapi/v6/playlist/detail",
+        { id: liked.id, n: 1000, s: 0, csrf_token: csrf },
+        cookie
+      );
+      const tracks =
+        ((detail.data as { playlist?: { tracks?: Array<{ id?: number }> } }).playlist?.tracks ?? []);
+      return json({ ids: tracks.map(t => Number(t.id)).filter(Boolean), playlistId: liked.id });
+    }
+
+    if (route === "like" && request.method === "POST") {
+      if (!cookie) return json({ error: "需要先登录网易云账号" }, 401);
+      const body = (await request.json()) as { id?: number; like?: boolean };
+      const id = Number(body.id ?? 0);
+      if (!id) return json({ error: "缺少歌曲 id" }, 400);
+
+      const { data } = await neteaseApi(
+        "/weapi/radio/like",
+        { alg: "itembased", trackId: id, like: Boolean(body.like), time: "3", csrf_token: csrf },
+        cookie
+      );
+      const code = Number((data as { code?: number }).code ?? 0);
+      if (code === 200) return json({ ok: true, like: Boolean(body.like) });
+
+      const message = String(
+        (data as { message?: string; msg?: string }).message ??
+          (data as { msg?: string }).msg ??
+          `操作失败（${code}）`
+      );
+      return json({ ok: false, code, error: message }, 400);
+    }
+
     if (route === "login" && request.method === "POST") {
       const body = (await request.json()) as {
         phone?: string;
