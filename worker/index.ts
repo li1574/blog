@@ -14,6 +14,8 @@
  *   POSTS_DIR       默认 src/content/posts
  */
 
+import { neteaseApi, csrfFrom } from "./netease";
+
 interface Env {
   ASSETS: { fetch: (req: Request) => Promise<Response> };
   GITHUB_TOKEN: string;
@@ -823,6 +825,179 @@ async function serveAudio(env: Env, rawName: string, request: Request): Promise<
   return new Response(upstream.body, { status: upstream.status, headers });
 }
 
+/* ============================================================
+ * 网易云音乐
+ *
+ * 登录态不落服务端：cookie 由浏览器保存，每次请求通过
+ * x-netease-cookie 头带上来，Worker 只做加密转发。
+ * ============================================================ */
+
+type NeteaseSong = {
+  id: number;
+  name: string;
+  artists: string;
+  album: string;
+  duration: number;
+  cover: string;
+};
+
+function mapSongs(data: Record<string, unknown>): NeteaseSong[] {
+  const source = data as {
+    result?: { songs?: unknown[] };
+    songs?: unknown[];
+    data?: { dailySongs?: unknown[] };
+  };
+  const list = (source.result?.songs ?? source.songs ?? source.data?.dailySongs ?? []) as Array<
+    Record<string, unknown>
+  >;
+
+  return list.map(song => {
+    const artists = (song.artists ?? song.ar ?? []) as Array<{ name?: string }>;
+    const album = (song.album ?? song.al ?? {}) as { name?: string; picUrl?: string };
+    return {
+      id: Number(song.id),
+      name: String(song.name ?? ""),
+      artists: artists.map(a => a.name ?? "").filter(Boolean).join(" / "),
+      album: album.name ?? "",
+      duration: Number(song.duration ?? song.dt ?? 0),
+      cover: album.picUrl ?? "",
+    };
+  });
+}
+
+/** 从 set-cookie 里挑出需要的几个字段拼成 cookie 串 */
+function cookieFromSetCookie(header: string | null): string {
+  if (!header) return "";
+  const wanted = ["MUSIC_U", "__csrf", "MUSIC_A", "NMTID", "__remember_me"];
+  const parts: string[] = [];
+  for (const chunk of header.split(/,(?=[^;]+=)/)) {
+    const pair = chunk.split(";")[0].trim();
+    const name = pair.split("=")[0];
+    if (wanted.includes(name)) parts.push(pair);
+  }
+  return parts.join("; ");
+}
+
+async function handleNetease(url: URL, request: Request): Promise<Response> {
+  const cookie = request.headers.get("x-netease-cookie") ?? "";
+  const csrf = csrfFrom(cookie);
+  const route = url.pathname.replace("/api/netease/", "");
+
+  try {
+    if (route === "search") {
+      const kw = (url.searchParams.get("kw") ?? "").trim();
+      if (!kw) return json({ songs: [] });
+      const { data } = await neteaseApi("/weapi/search/get", { s: kw, type: 1, limit: 30, offset: 0 }, cookie);
+      return json({ songs: mapSongs(data) });
+    }
+
+    if (route === "recommend") {
+      const { data } = await neteaseApi(
+        "/api/v3/discovery/recommend/songs",
+        { csrf_token: csrf },
+        cookie
+      );
+      return json({ songs: mapSongs(data) });
+    }
+
+    if (route === "playlists") {
+      const uid = url.searchParams.get("uid");
+      if (!uid) return json({ error: "缺少 uid" }, 400);
+      const { data } = await neteaseApi(
+        "/weapi/user/playlist",
+        { uid, limit: 1000, offset: 0, csrf_token: csrf },
+        cookie
+      );
+      const list = ((data as { playlist?: unknown[] }).playlist ?? []) as Array<Record<string, unknown>>;
+      return json({
+        playlists: list.map(p => ({
+          id: Number(p.id),
+          name: String(p.name ?? ""),
+          cover: String(p.coverImgUrl ?? ""),
+          count: Number(p.trackCount ?? 0),
+          creator: Boolean(p.subscribed) ? "收藏" : "创建",
+        })),
+      });
+    }
+
+    if (route === "playlist") {
+      const id = Number(url.searchParams.get("id") ?? 0);
+      if (!id) return json({ error: "缺少 id" }, 400);
+      const { data } = await neteaseApi(
+        "/weapi/v6/playlist/detail",
+        { id, n: 1000, s: 0, csrf_token: csrf },
+        cookie
+      );
+      const playlist = (data as { playlist?: Record<string, unknown> }).playlist;
+      if (!playlist) return json({ error: "歌单不存在" }, 404);
+      return json({
+        name: String(playlist.name ?? ""),
+        cover: String(playlist.coverImgUrl ?? ""),
+        songs: mapSongs({ songs: playlist.tracks as unknown[] }),
+      });
+    }
+
+    if (route === "url") {
+      const id = Number(url.searchParams.get("id") ?? 0);
+      if (!id) return json({ error: "缺少 id" }, 400);
+      const { data } = await neteaseApi(
+        "/weapi/song/enhance/player/url",
+        { ids: `[${id}]`, br: 320000 },
+        cookie
+      );
+      const first = ((data as { data?: Array<Record<string, unknown>> }).data ?? [])[0];
+      return json({ url: (first?.url as string) ?? null, br: Number(first?.br ?? 0) });
+    }
+
+    if (route === "account") {
+      const { data } = await neteaseApi("/weapi/w/nuser/account/get", { csrf_token: csrf }, cookie);
+      const profile = (data as { profile?: Record<string, unknown> }).profile;
+      return json({
+        profile: profile
+          ? { uid: Number(profile.userId), nickname: String(profile.nickname ?? ""), avatar: String(profile.avatarUrl ?? "") }
+          : null,
+      });
+    }
+
+    if (route === "login" && request.method === "POST") {
+      const body = (await request.json()) as {
+        phone?: string;
+        password?: string;
+        countrycode?: string;
+      };
+      if (!body.phone || !body.password) return json({ error: "手机号和密码都要填" }, 400);
+
+      const { data, setCookie } = await neteaseApi("/weapi/login/cellphone", {
+        phone: body.phone,
+        password: body.password,
+        countrycode: body.countrycode ?? "86",
+        rememberLogin: true,
+      });
+
+      const code = Number((data as { code?: number }).code ?? 0);
+      if (code !== 200) {
+        return json(
+          { error: String((data as { msg?: string; message?: string }).msg ?? (data as { message?: string }).message ?? `登录失败（${code}）`) },
+          401
+        );
+      }
+
+      const cookie = cookieFromSetCookie(setCookie);
+      const profile = (data as { profile?: Record<string, unknown> }).profile;
+      return json({
+        cookie,
+        profile: profile
+          ? { uid: Number(profile.userId), nickname: String(profile.nickname ?? ""), avatar: String(profile.avatarUrl ?? "") }
+          : null,
+      });
+    }
+
+    return json({ error: "Not Found" }, 404);
+  } catch (error) {
+    return json({ error: `网易接口出错：${(error as Error).message}` }, 502);
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -862,6 +1037,11 @@ export default {
       } catch (error) {
         return json({ error: `内部错误：${(error as Error).message}` }, 500);
       }
+    }
+
+    // 网易云音乐接口（公开，登录态由浏览器通过 header 带上）
+    if (url.pathname.startsWith("/api/netease/")) {
+      return await handleNetease(url, request);
     }
 
     // 以下都要口令

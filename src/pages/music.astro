@@ -16,13 +16,88 @@ const description = "放在这个站上的曲子。";
   <Breadcrumb />
 
   <Main pageTitle={title} class="app-prose">
-    <p class="text-muted-foreground -mt-2 mb-6 text-sm">
-      音频存在仓库的 Release 里，播放走 Cloudflare 边缘节点，支持拖动进度。
-    </p>
+    <div class="not-prose -mt-2 mb-5 flex gap-2">
+      <button
+        id="src-repo"
+        type="button"
+        class="rounded-md border px-4 py-1.5 text-sm"
+        data-src="repo"
+      >
+        仓库源
+      </button>
+      <button
+        id="src-netease"
+        type="button"
+        class="rounded-md border px-4 py-1.5 text-sm"
+        data-src="netease"
+      >
+        网易源
+      </button>
+    </div>
 
-    <div class="not-prose">
-      <p id="track-state" class="text-muted-foreground text-sm">正在加载…</p>
-      <ul id="track-list" class="divide-border border-border mt-2 divide-y border-y" hidden></ul>
+    <div id="panel-repo">
+      <p class="text-muted-foreground mb-6 text-sm">
+        音频存在仓库的 Release 里，播放走 Cloudflare 边缘节点，支持拖动进度。
+      </p>
+
+      <div class="not-prose">
+        <p id="track-state" class="text-muted-foreground text-sm">正在加载…</p>
+        <ul id="track-list" class="divide-border border-border mt-2 divide-y border-y" hidden></ul>
+      </div>
+    </div>
+
+    <div id="panel-netease" hidden>
+      <p class="text-muted-foreground mb-3 text-sm">
+        直接调用网易云官方接口。每日推荐不登录也能看，登录后才是根据你口味生成的，并且能看到自己的歌单。
+      </p>
+
+      <div id="ne-login" class="not-prose border-border mb-4 rounded-md border p-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <input
+            id="ne-phone"
+            type="tel"
+            inputmode="numeric"
+            placeholder="手机号"
+            class="border-border bg-background w-40 rounded-md border px-3 py-1.5 text-sm"
+          />
+          <input
+            id="ne-pass"
+            type="password"
+            placeholder="密码"
+            class="border-border bg-background w-40 rounded-md border px-3 py-1.5 text-sm"
+          />
+          <button id="ne-login-btn" type="button" class="bg-accent text-accent-foreground rounded-md px-4 py-1.5 text-sm">
+            登录
+          </button>
+          <span id="ne-login-msg" class="text-muted-foreground text-xs"></span>
+        </div>
+      </div>
+
+      <div id="ne-user" class="not-prose mb-4 hidden items-center gap-3">
+        <img id="ne-avatar" alt="" class="size-8 rounded-full" />
+        <span id="ne-name" class="text-sm"></span>
+        <button id="ne-logout" type="button" class="text-muted-foreground text-xs underline">退出</button>
+      </div>
+
+      <div class="not-prose mb-3 flex flex-wrap gap-2">
+        <button type="button" data-tab="recommend" class="ne-tab rounded-md border px-3 py-1 text-sm">每日推荐</button>
+        <button type="button" data-tab="search" class="ne-tab rounded-md border px-3 py-1 text-sm">搜索</button>
+        <button type="button" data-tab="playlists" class="ne-tab rounded-md border px-3 py-1 text-sm">我的歌单</button>
+      </div>
+
+      <div id="ne-searchbar" class="not-prose mb-3 hidden gap-2">
+        <input
+          id="ne-kw"
+          type="search"
+          placeholder="歌名 / 歌手"
+          class="border-border bg-background flex-1 rounded-md border px-3 py-1.5 text-sm"
+        />
+        <button id="ne-search-btn" type="button" class="border-border rounded-md border px-4 py-1.5 text-sm">搜索</button>
+      </div>
+
+      <p id="ne-state" class="text-muted-foreground text-sm">选一个标签开始。</p>
+      <ul id="ne-list" class="not-prose divide-border border-border mt-2 divide-y border-y" hidden></ul>
+      <div id="ne-playlists" class="not-prose mt-3 hidden grid grid-cols-2 gap-3 sm:grid-cols-3"></div>
     </div>
 
     <div class="h-24"></div>
@@ -174,7 +249,7 @@ const description = "放在这个站上的曲子。";
     aif: "audio/aiff",
   };
 
-  type Track = { name: string; title: string; size: number; url: string };
+  type Track = { name: string; title: string; size: number; url: string; id?: number };
 
   let tracks: Track[] = [];
   let current = -1;
@@ -237,6 +312,9 @@ const description = "放在这个站上的曲子。";
 
   let mode: Mode = loadMode();
 
+  // 当前播放队列来自哪个源，用于列表高亮
+  let queueSource: "repo" | "netease" = "repo";
+
   function applyMode() {
     if (!ui) return;
     ui.iconOrder.classList.toggle("hidden", mode !== "order");
@@ -282,9 +360,13 @@ const description = "放在这个站上的曲子。";
     ui.iconPlay.classList.toggle("hidden", on);
     ui.iconPause.classList.toggle("hidden", !on);
     ui.playBtn.setAttribute("aria-label", on ? "暂停" : "播放");
-    ui.list.querySelectorAll("li").forEach((li, i) => {
-      li.classList.toggle("text-accent", i === current);
-    });
+    if (queueSource === "repo") {
+      ui.list.querySelectorAll("li").forEach((li, i) => {
+        li.classList.toggle("text-accent", i === current);
+      });
+    } else {
+      ui.list.querySelectorAll("li").forEach(li => li.classList.remove("text-accent"));
+    }
   }
 
   function ensureAudio(): HTMLAudioElement {
@@ -301,12 +383,12 @@ const description = "放在这个站上的曲子。";
         return;
       }
       if (mode === "shuffle") {
-        playAt(randomIndex());
+        playAt(randomIndex(), queueSource);
         return;
       }
       // 顺序播放：还有下一首就继续，最后一首放完就停
       // 注意：自然播完不会触发 pause 事件，要手动把图标切回「播放」
-      if (current < tracks.length - 1) playAt(current + 1);
+      if (current < tracks.length - 1) playAt(current + 1, queueSource);
       else setPlaying(false);
     });
     el.addEventListener("loadedmetadata", () => {
@@ -342,14 +424,35 @@ const description = "放在这个站上的曲子。";
     setPlaying(!audio.paused);
   }
 
-  function playAt(index: number) {
+  async function playAt(index: number, from: "repo" | "netease" = "repo") {
     if (!tracks.length) return;
     current = (index + tracks.length) % tracks.length;
+    queueSource = from;
+    const track = tracks[current];
     const el = ensureAudio();
-    el.src = tracks[current].url;
+
+    let src = track.url;
+    if (!src && track.id) {
+      // 网易曲目要现取播放地址，地址有时效
+      try {
+        const res = await fetch(`/api/netease/url?id=${track.id}`, { headers: neteaseHeaders() });
+        const data = (await res.json()) as { url?: string | null };
+        src = data.url ?? "";
+      } catch {
+        src = "";
+      }
+      if (!src) {
+        neSay(`《${track.title}》拿不到播放地址（可能要会员、已下架或地区限制）`);
+        return;
+      }
+      track.url = src;
+    }
+    if (!src) return;
+
+    el.src = src;
     if (ui) {
       ui.bar.classList.remove("hidden");
-      ui.titleEl.textContent = tracks[current].title;
+      ui.titleEl.textContent = track.title;
       ui.curEl.textContent = "0:00";
       ui.durEl.textContent = "0:00";
       ui.seek.value = "0";
@@ -401,8 +504,8 @@ const description = "放在这个站上的曲子。";
       else if (el.paused) el.play().catch(() => {});
       else el.pause();
     };
-    prevBtn.onclick = () => playAt(current < 0 ? 0 : current - 1);
-    nextBtn.onclick = () => playAt(nextIndex());
+    prevBtn.onclick = () => playAt(current < 0 ? 0 : current - 1, queueSource);
+    nextBtn.onclick = () => playAt(nextIndex(), queueSource);
 
     seek.oninput = () => {
       seeking = true;
@@ -420,6 +523,7 @@ const description = "放在这个站上的曲子。";
 
     ensureAudio();
     loadTracks();
+    initNetease();
   }
 
   async function loadTracks() {
@@ -489,6 +593,377 @@ const description = "放在这个站上的曲子。";
       state.hidden = false;
       state.textContent = `加载失败：${(error as Error).message}`;
     }
+  }
+
+
+  /* ==================== 网易源 ==================== */
+
+  type NeSong = {
+    id: number;
+    name: string;
+    artists: string;
+    album: string;
+    duration: number;
+    cover: string;
+  };
+
+  type NePlaylist = { id: number; name: string; cover: string; count: number; creator: string };
+
+  let neCookie = "";
+  let neProfile: { uid: number; nickname: string; avatar: string } | null = null;
+  let neTab: "recommend" | "search" | "playlists" = "recommend";
+  let neSongs: NeSong[] = [];
+  let source: "repo" | "netease" = "repo";
+
+  function neSay(text: string) {
+    const el = document.getElementById("ne-state");
+    if (!el) return;
+    el.hidden = false;
+    el.textContent = text;
+  }
+
+  function neClear() {
+    const list = document.getElementById("ne-list");
+    const grid = document.getElementById("ne-playlists");
+    if (list) {
+      list.innerHTML = "";
+      list.hidden = true;
+    }
+    if (grid) {
+      grid.innerHTML = "";
+      grid.classList.add("hidden");
+    }
+  }
+
+  function neteaseHeaders(): Record<string, string> {
+    return neCookie ? { "x-netease-cookie": neCookie } : {};
+  }
+
+  function loadNeteaseAuth() {
+    try {
+      neCookie = localStorage.getItem("netease-cookie") ?? "";
+      const raw = localStorage.getItem("netease-profile");
+      neProfile = raw ? (JSON.parse(raw) as { uid: number; nickname: string; avatar: string }) : null;
+    } catch {
+      neCookie = "";
+      neProfile = null;
+    }
+  }
+
+  function saveNeteaseAuth() {
+    try {
+      localStorage.setItem("netease-cookie", neCookie);
+      localStorage.setItem("netease-profile", neProfile ? JSON.stringify(neProfile) : "");
+    } catch {
+      // 忽略
+    }
+  }
+
+  function renderNeUser() {
+    const login = document.getElementById("ne-login");
+    const user = document.getElementById("ne-user");
+    const avatar = document.getElementById("ne-avatar") as HTMLImageElement | null;
+    const name = document.getElementById("ne-name");
+    if (!login || !user) return;
+
+    const loggedIn = Boolean(neProfile && neCookie);
+    login.classList.toggle("hidden", loggedIn);
+    user.classList.toggle("hidden", !loggedIn);
+    user.classList.toggle("flex", loggedIn);
+    if (loggedIn && neProfile) {
+      if (avatar) avatar.src = neProfile.avatar;
+      if (name) name.textContent = neProfile.nickname;
+    }
+  }
+
+  async function neGet(path: string): Promise<Record<string, unknown>> {
+    const res = await fetch(`/api/netease/${path}`, { headers: neteaseHeaders() });
+    const data = (await res.json()) as Record<string, unknown>;
+    if (!res.ok) throw new Error(String(data.error ?? `HTTP ${res.status}`));
+    return data;
+  }
+
+  function renderNeSongs(songs: NeSong[]) {
+    neSongs = songs;
+    const list = document.getElementById("ne-list");
+    const box = document.getElementById("ne-playlists");
+    if (!list) return;
+    if (box) box.classList.add("hidden");
+    list.innerHTML = "";
+    list.hidden = false;
+
+    if (!songs.length) {
+      list.hidden = true;
+      neSay("没有结果。");
+      return;
+    }
+
+    songs.forEach((song, index) => {
+      const li = document.createElement("li");
+      li.className = "hover:bg-muted/40 flex cursor-pointer items-center gap-3 px-1 py-2.5";
+
+      const num = document.createElement("span");
+      num.className = "text-muted-foreground w-6 text-right text-xs tabular-nums";
+      num.textContent = String(index + 1).padStart(2, "0");
+
+      const main = document.createElement("div");
+      main.className = "min-w-0 flex-1";
+
+      const title = document.createElement("div");
+      title.className = "truncate text-sm font-medium";
+      title.textContent = song.name;
+
+      const meta = document.createElement("div");
+      meta.className = "text-muted-foreground truncate text-xs";
+      meta.textContent = [song.artists, song.album].filter(Boolean).join(" · ");
+
+      main.append(title, meta);
+      li.append(num, main);
+      li.addEventListener("click", () => {
+        tracks = songs.map(s => ({
+          name: `${s.id}`,
+          title: s.artists ? `${s.name} - ${s.artists}` : s.name,
+          size: 0,
+          url: "",
+          id: s.id,
+        }));
+        void playAt(index, "netease");
+      });
+
+      list.appendChild(li);
+    });
+  }
+
+  function renderNePlaylists(items: NePlaylist[]) {
+    const grid = document.getElementById("ne-playlists");
+    const list = document.getElementById("ne-list");
+    if (!grid) return;
+    if (list) list.hidden = true;
+    grid.innerHTML = "";
+    grid.classList.remove("hidden");
+
+    if (!items.length) {
+      grid.classList.add("hidden");
+      neSay("没有歌单。");
+      return;
+    }
+
+    for (const item of items) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className =
+        "border-border hover:border-accent overflow-hidden rounded-md border text-left";
+      card.innerHTML = "";
+
+      const img = document.createElement("img");
+      img.src = item.cover;
+      img.alt = item.name;
+      img.loading = "lazy";
+      img.className = "aspect-square w-full object-cover";
+
+      const info = document.createElement("div");
+      info.className = "p-2";
+      const nm = document.createElement("div");
+      nm.className = "truncate text-sm";
+      nm.textContent = item.name;
+      const sub = document.createElement("div");
+      sub.className = "text-muted-foreground text-xs";
+      sub.textContent = `${item.count} 首 · ${item.creator}`;
+      info.append(nm, sub);
+
+      card.append(img, info);
+      card.addEventListener("click", () => void openNePlaylist(item.id));
+      grid.appendChild(card);
+    }
+  }
+
+  async function openNePlaylist(id: number) {
+    neSay("正在读取歌单…");
+    try {
+      const data = await neGet(`playlist?id=${id}`);
+      const songs = (data.songs ?? []) as NeSong[];
+      neSay(`歌单：${String(data.name ?? "")}（${songs.length} 首）`);
+      renderNeSongs(songs);
+    } catch (error) {
+      neSay(`读取歌单失败：${(error as Error).message}`);
+    }
+  }
+
+  async function loadNeTab(tab: "recommend" | "search" | "playlists") {
+    neTab = tab;
+    document.querySelectorAll<HTMLElement>(".ne-tab").forEach(btn => {
+      const active = btn.dataset.tab === tab;
+      btn.classList.toggle("bg-accent", active);
+      btn.classList.toggle("text-accent-foreground", active);
+    });
+
+    const bar = document.getElementById("ne-searchbar");
+    if (bar) {
+      bar.classList.toggle("hidden", tab !== "search");
+      bar.classList.toggle("flex", tab === "search");
+    }
+
+    if (tab === "search") {
+      neClear();
+      neSay("输入关键词搜索。");
+      return;
+    }
+
+    if (tab === "playlists") {
+      if (!neCookie || !neProfile) {
+        neClear();
+        neSay("看自己的歌单需要先登录。");
+        return;
+      }
+      neSay("正在读取歌单…");
+      try {
+        const data = await neGet(`playlists?uid=${neProfile.uid}`);
+        const items = (data.playlists ?? []) as NePlaylist[];
+        neSay(`共 ${items.length} 个歌单（收藏 + 创建）`);
+        renderNePlaylists(items);
+      } catch (error) {
+        neSay(`读取歌单失败：${(error as Error).message}`);
+      }
+      return;
+    }
+
+    neSay("正在获取每日推荐…");
+    try {
+      const data = await neGet("recommend");
+      const songs = (data.songs ?? []) as NeSong[];
+      neSay(
+        `${neCookie ? "根据你的口味生成" : "未登录，显示的是通用推荐"} · ${songs.length} 首`
+      );
+      renderNeSongs(songs);
+    } catch (error) {
+      neSay(`获取推荐失败：${(error as Error).message}`);
+    }
+  }
+
+  async function doNeteaseLogin() {
+    const phone = (document.getElementById("ne-phone") as HTMLInputElement | null)?.value.trim() ?? "";
+    const pass = (document.getElementById("ne-pass") as HTMLInputElement | null)?.value ?? "";
+    const msg = document.getElementById("ne-login-msg");
+    if (!phone || !pass) {
+      if (msg) msg.textContent = "手机号和密码都要填";
+      return;
+    }
+    if (msg) msg.textContent = "登录中…";
+
+    try {
+      const res = await fetch("/api/netease/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ phone, password: pass }),
+      });
+      const data = (await res.json()) as {
+        cookie?: string;
+        profile?: { uid: number; nickname: string; avatar: string } | null;
+        error?: string;
+      };
+      if (!res.ok || !data.cookie) {
+        if (msg) msg.textContent = data.error ?? "登录失败";
+        return;
+      }
+      neCookie = data.cookie;
+      neProfile = data.profile ?? null;
+      saveNeteaseAuth();
+      if (msg) msg.textContent = "";
+      renderNeUser();
+      neSay("登录成功。");
+      void loadNeTab(neTab === "playlists" ? "playlists" : "recommend");
+    } catch (error) {
+      if (msg) msg.textContent = `登录失败：${(error as Error).message}`;
+    }
+  }
+
+  function switchSource(next: "repo" | "netease") {
+    source = next;
+    try {
+      localStorage.setItem("music-source", next);
+    } catch {
+      // 忽略
+    }
+
+    const repo = document.getElementById("panel-repo");
+    const ne = document.getElementById("panel-netease");
+    if (repo) repo.hidden = next !== "repo";
+    if (ne) ne.hidden = next !== "netease";
+
+    document.querySelectorAll<HTMLElement>("[data-src]").forEach(btn => {
+      const active = btn.dataset.src === next;
+      btn.classList.toggle("bg-accent", active);
+      btn.classList.toggle("text-accent-foreground", active);
+      btn.classList.toggle("border-accent", active);
+    });
+
+    if (next === "netease" && ne && ne.dataset.loaded !== "1") {
+      ne.dataset.loaded = "1";
+      void loadNeTab("recommend");
+    }
+  }
+
+  function initNetease() {
+    const panel = document.getElementById("panel-netease");
+    if (!panel) return;
+    if (panel.dataset.bound === "1") {
+      // 返回本页时 DOM 是新的，重新刷一次状态
+      renderNeUser();
+      switchSource(source);
+      return;
+    }
+    panel.dataset.bound = "1";
+
+    loadNeteaseAuth();
+    try {
+      const saved = localStorage.getItem("music-source");
+      source = saved === "netease" ? "netease" : "repo";
+    } catch {
+      source = "repo";
+    }
+
+    document.querySelectorAll<HTMLElement>("[data-src]").forEach(btn => {
+      btn.onclick = () => switchSource(btn.dataset.src === "netease" ? "netease" : "repo");
+    });
+    document.querySelectorAll<HTMLElement>(".ne-tab").forEach(btn => {
+      btn.onclick = () => {
+        const tab = btn.dataset.tab;
+        if (tab === "recommend" || tab === "search" || tab === "playlists") void loadNeTab(tab);
+      };
+    });
+
+    const loginBtn = document.getElementById("ne-login-btn");
+    if (loginBtn) loginBtn.onclick = () => void doNeteaseLogin();
+
+    const searchBtn = document.getElementById("ne-search-btn");
+    if (searchBtn) {
+      searchBtn.onclick = () => {
+        const kw = (document.getElementById("ne-kw") as HTMLInputElement | null)?.value.trim() ?? "";
+        if (!kw) return;
+        neSay("搜索中…");
+        void neGet(`search?kw=${encodeURIComponent(kw)}`)
+          .then(data => {
+            const songs = (data.songs ?? []) as NeSong[];
+            neSay(`「${kw}」找到 ${songs.length} 首`);
+            renderNeSongs(songs);
+          })
+          .catch(error => neSay(`搜索失败：${(error as Error).message}`));
+      };
+    }
+
+    const logout = document.getElementById("ne-logout");
+    if (logout) {
+      logout.onclick = () => {
+        neCookie = "";
+        neProfile = null;
+        saveNeteaseAuth();
+        renderNeUser();
+        neSay("已退出登录。");
+      };
+    }
+
+    renderNeUser();
+    switchSource(source);
   }
 
   document.addEventListener("astro:page-load", initPlayer);
