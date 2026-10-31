@@ -14,6 +14,7 @@ import ShareLinks from "./_components/ShareLinks.astro";
 import BackButton from "./_components/BackButton.astro";
 import BackToTopButton from "./_components/BackToTopButton.astro";
 import AdjacentPostNav from "./_components/AdjacentPostNav.astro";
+import Comments from "@/components/Comments.astro";
 import config from "@/config";
 
 export async function getStaticPaths() {
@@ -134,16 +135,20 @@ const ogImage = ogImageUrl
       <EditPost {hideEditPost} {post} class="max-sm:hidden" />
     </div>
 
-    <article
-      id="article"
-      class:list={[
-        "mt-8 w-full",
-        "app-prose max-w-app",
-        "prose-pre:bg-(--shiki-light-bg) dark:prose-pre:bg-(--shiki-dark-bg)",
-      ]}
-    >
-      <Content />
-    </article>
+    <div class="mt-8 grid grid-cols-1 gap-x-10 lg:grid-cols-[minmax(0,1fr)_17rem]">
+      <article
+        id="article"
+        class:list={[
+          "w-full",
+          "app-prose max-w-app",
+          "prose-pre:bg-(--shiki-light-bg) dark:prose-pre:bg-(--shiki-dark-bg)",
+        ]}
+      >
+        <Content />
+      </article>
+
+      <Comments slug={Astro.params.slug ?? post.id} />
+    </div>
 
     <hr class="my-8 border-dashed" />
 

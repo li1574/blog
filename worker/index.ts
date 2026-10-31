@@ -1094,6 +1094,189 @@ async function handleNetease(url: URL, request: Request): Promise<Response> {
   }
 }
 
+
+/* ============================================================
+ * 留言区
+ *
+ * 存在 comments 分支的 JSON 文件里。不写 main，避免每条留言
+ * 都触发一次构建。前端每 6 秒轮询一次，做到近似实时。
+ * ============================================================ */
+
+const COMMENT_BRANCH = "comments";
+const COMMENT_DIR = "comments";
+
+type Comment = { id: string; name: string; text: string; at: string };
+
+/** 每个 IP 两次留言的最小间隔 */
+const COMMENT_INTERVAL_MS = 15000;
+const commentHits = new Map<string, number>();
+
+function b64ToText(b64: string): string {
+  const binary = atob(b64.replace(/\s/g, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+function textToB64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+async function ensureCommentBranch(env: Env): Promise<boolean> {
+  const head = await fetch(
+    `${GH_API}/repos/${env.GITHUB_REPO}/git/ref/heads/${COMMENT_BRANCH}`,
+    { headers: ghHeaders(env) }
+  );
+  if (head.ok) return true;
+
+  const main = await fetch(`${GH_API}/repos/${env.GITHUB_REPO}/git/ref/heads/${branch(env)}`, {
+    headers: ghHeaders(env),
+  });
+  if (!main.ok) return false;
+  const sha = ((await main.json()) as { object: { sha: string } }).object.sha;
+
+  const res = await fetch(`${GH_API}/repos/${env.GITHUB_REPO}/git/refs`, {
+    method: "POST",
+    headers: { ...ghHeaders(env), "content-type": "application/json" },
+    body: JSON.stringify({ ref: `refs/heads/${COMMENT_BRANCH}`, sha }),
+  });
+  return res.ok;
+}
+
+async function readCommentFile(
+  env: Env,
+  slug: string
+): Promise<{ list: Comment[]; sha: string | null }> {
+  const path = `${COMMENT_DIR}/${slug}.json`;
+  const res = await fetch(
+    `${GH_API}/repos/${env.GITHUB_REPO}/contents/${path}?ref=${COMMENT_BRANCH}`,
+    { headers: ghHeaders(env) }
+  );
+  if (res.status === 404) return { list: [], sha: null };
+  if (!res.ok) throw new Error(`读取失败：GitHub ${res.status}`);
+
+  const data = (await res.json()) as { content: string; sha: string };
+  const parsed = JSON.parse(b64ToText(data.content)) as Comment[];
+  return { list: Array.isArray(parsed) ? parsed : [], sha: data.sha };
+}
+
+async function saveCommentFile(
+  env: Env,
+  slug: string,
+  list: Comment[],
+  sha: string | null
+): Promise<Response> {
+  const path = `${COMMENT_DIR}/${slug}.json`;
+  return fetch(`${GH_API}/repos/${env.GITHUB_REPO}/contents/${path}`, {
+    method: "PUT",
+    headers: { ...ghHeaders(env), "content-type": "application/json" },
+    body: JSON.stringify({
+      message: `留言：${slug}（${list.length} 条）`,
+      content: textToB64(JSON.stringify(list, null, 1)),
+      branch: COMMENT_BRANCH,
+      ...(sha ? { sha } : {}),
+    }),
+  });
+}
+
+function cleanSlug(raw: string): string | null {
+  const slug = raw.trim();
+  if (!slug || slug.length > 120) return null;
+  if (slug.includes("/") || slug.includes("\\") || slug.includes("..")) return null;
+  return slug;
+}
+
+async function handleComments(env: Env, url: URL, request: Request): Promise<Response> {
+  // GET/DELETE 从 query 取，POST 从 body 取
+  let payload: { name?: string; text?: string; slug?: string } = {};
+  if (request.method === "POST") {
+    try {
+      payload = (await request.json()) as { name?: string; text?: string; slug?: string };
+    } catch {
+      return json({ error: "请求格式不对" }, 400);
+    }
+  }
+
+  const slug = cleanSlug(payload.slug ?? url.searchParams.get("slug") ?? "");
+  if (!slug) return json({ error: "slug 不合法" }, 400);
+
+  if (request.method === "GET") {
+    try {
+      const { list } = await readCommentFile(env, slug);
+      return json({ comments: list, now: Date.now() });
+    } catch (error) {
+      return json({ error: (error as Error).message }, 502);
+    }
+  }
+
+  if (request.method === "POST") {
+    const ip = request.headers.get("cf-connecting-ip") ?? "local";
+    const last = commentHits.get(ip) ?? 0;
+    if (Date.now() - last < COMMENT_INTERVAL_MS) {
+      return json({ error: "发得太快了，歇十几秒再发" }, 429);
+    }
+
+    const name = String(payload.name ?? "").trim().slice(0, 20) || "匿名";
+    const text = String(payload.text ?? "").trim().slice(0, 500);
+    if (!text) return json({ error: "内容不能为空" }, 400);
+
+    commentHits.set(ip, Date.now());
+
+    if (!(await ensureCommentBranch(env))) {
+      return json({ error: "留言分支创建失败，检查令牌权限" }, 500);
+    }
+
+    // 读-改-写：并发时可能撞版本，重试一次
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { list, sha } = await readCommentFile(env, slug);
+        const comment: Comment = {
+          id: crypto.randomUUID(),
+          name,
+          text,
+          at: new Date().toISOString(),
+        };
+        const next = [...list, comment];
+        const res = await saveCommentFile(env, slug, next, sha);
+        if (res.ok) return json({ ok: true, comment });
+        if (res.status !== 409 && res.status !== 422) {
+          return json({ error: `写入失败：GitHub ${res.status}` }, 502);
+        }
+      } catch (error) {
+        return json({ error: (error as Error).message }, 502);
+      }
+    }
+    return json({ error: "刚好有人同时留言，再发一次" }, 409);
+  }
+
+  if (request.method === "DELETE") {
+    const password = request.headers.get("x-admin-password") ?? "";
+    if (password !== env.ADMIN_PASSWORD) return json({ error: "口令不对" }, 401);
+
+    const id = url.searchParams.get("id") ?? "";
+    if (!id) return json({ error: "缺少 id" }, 400);
+
+    try {
+      const { list, sha } = await readCommentFile(env, slug);
+      const next = list.filter(c => c.id !== id);
+      if (next.length === list.length) return json({ error: "没找到这条留言" }, 404);
+      const res = await saveCommentFile(env, slug, next, sha);
+      if (!res.ok) return json({ error: `删除失败：GitHub ${res.status}` }, 502);
+      return json({ ok: true });
+    } catch (error) {
+      return json({ error: (error as Error).message }, 502);
+    }
+  }
+
+  return json({ error: "Not Found" }, 404);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -1133,6 +1316,12 @@ export default {
       } catch (error) {
         return json({ error: `内部错误：${(error as Error).message}` }, 500);
       }
+    }
+
+    // 留言：公开读写（写有频率限制），存在 comments 分支
+    if (url.pathname === "/api/comments") {
+      if (!env.GITHUB_TOKEN) return json({ error: "服务端未配置令牌" }, 500);
+      return await handleComments(env, url, request);
     }
 
     // 网易云音乐接口（公开，登录态由浏览器通过 header 带上）

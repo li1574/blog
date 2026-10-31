@@ -1,0 +1,171 @@
+---
+type Props = { slug: string };
+const { slug } = Astro.props;
+---
+
+<aside
+  id="comments"
+  class="border-border mt-10 border-t pt-6 lg:sticky lg:top-20 lg:mt-8 lg:self-start lg:border-t-0 lg:pt-0"
+  data-slug={slug}
+>
+  <h2 class="text-accent mb-1 text-base font-bold">留言</h2>
+  <p class="text-muted-foreground mb-3 text-xs">昵称随便填，不用登录。</p>
+
+  <form id="cm-form" class="flex flex-col gap-2">
+    <input
+      id="cm-name"
+      type="text"
+      maxlength="20"
+      placeholder="昵称（可不填）"
+      class="border-border bg-background rounded-md border px-2 py-1.5 text-sm"
+    />
+    <textarea
+      id="cm-text"
+      maxlength="500"
+      rows="3"
+      placeholder="说点什么…"
+      class="border-border bg-background resize-y rounded-md border px-2 py-1.5 text-sm"
+    ></textarea>
+    <div class="flex items-center gap-2">
+      <button
+        type="submit"
+        class="bg-accent text-accent-foreground rounded-md px-3 py-1.5 text-sm"
+      >
+        发送
+      </button>
+      <span id="cm-status" class="text-muted-foreground text-xs"></span>
+    </div>
+  </form>
+
+  <ul id="cm-list" class="divide-border mt-4 divide-y"></ul>
+</aside>
+
+<script>
+  const POLL_MS = 6000;
+  let pollTimer: number | null = null;
+
+  function pad(n: number): string {
+    return String(n).padStart(2, "0");
+  }
+
+  function fmtTime(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function render(list: Array<{ id: string; name: string; text: string; at: string }>, box: HTMLElement) {
+    box.innerHTML = "";
+    if (!list.length) {
+      const empty = document.createElement("li");
+      empty.className = "text-muted-foreground py-3 text-xs";
+      empty.textContent = "还没有留言，来占个位。";
+      box.appendChild(empty);
+      return;
+    }
+
+    for (const item of list) {
+      const li = document.createElement("li");
+      li.className = "py-2.5";
+
+      const head = document.createElement("div");
+      head.className = "mb-0.5 flex items-baseline gap-2";
+
+      const name = document.createElement("span");
+      name.className = "text-accent truncate text-sm font-medium";
+      name.textContent = item.name;
+
+      const time = document.createElement("span");
+      time.className = "text-muted-foreground shrink-0 text-xs";
+      time.textContent = fmtTime(item.at);
+
+      const text = document.createElement("p");
+      text.className = "text-sm break-words whitespace-pre-wrap";
+      text.textContent = item.text;
+
+      head.append(name, time);
+      li.append(head, text);
+      box.appendChild(li);
+    }
+  }
+
+  async function loadComments(slug: string, box: HTMLElement, status: HTMLElement) {
+    try {
+      const res = await fetch(`/api/comments?slug=${encodeURIComponent(slug)}`, {
+        headers: { accept: "application/json" },
+      });
+      const data = (await res.json()) as {
+        comments?: Array<{ id: string; name: string; text: string; at: string }>;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      render(data.comments ?? [], box);
+    } catch (error) {
+      status.textContent = `读取失败：${(error as Error).message}`;
+    }
+  }
+
+  function initComments() {
+    const aside = document.getElementById("comments");
+    if (!aside) return;
+    if (aside.dataset.bound === "1") return;
+    aside.dataset.bound = "1";
+
+    const slug = aside.dataset.slug ?? "";
+    if (!slug) return;
+
+    const form = document.getElementById("cm-form") as HTMLFormElement | null;
+    const nameEl = document.getElementById("cm-name") as HTMLInputElement | null;
+    const textEl = document.getElementById("cm-text") as HTMLTextAreaElement | null;
+    const status = document.getElementById("cm-status");
+    const box = document.getElementById("cm-list");
+    if (!form || !nameEl || !textEl || !status || !box) return;
+
+    form.onsubmit = async event => {
+      event.preventDefault();
+      const text = textEl.value.trim();
+      if (!text) {
+        status.textContent = "先写点内容";
+        return;
+      }
+      status.textContent = "发送中…";
+
+      try {
+        const res = await fetch("/api/comments", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ slug, name: nameEl.value, text }),
+        });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          status.textContent = data.error ?? `发送失败（${res.status}）`;
+          return;
+        }
+        textEl.value = "";
+        status.textContent = "已发送";
+        await loadComments(slug, box, status);
+        window.setTimeout(() => {
+          if (status.textContent === "已发送") status.textContent = "";
+        }, 2000);
+      } catch (error) {
+        status.textContent = `发送失败：${(error as Error).message}`;
+      }
+    };
+
+    void loadComments(slug, box, status);
+
+    // 轮询：页面切走就停
+    if (pollTimer) window.clearInterval(pollTimer);
+    pollTimer = window.setInterval(() => {
+      if (!document.getElementById("comments")) {
+        window.clearInterval(pollTimer!);
+        pollTimer = null;
+        return;
+      }
+      void loadComments(slug, box, status);
+    }, POLL_MS);
+  }
+
+  document.addEventListener("astro:page-load", initComments);
+  initComments();
+</script>
