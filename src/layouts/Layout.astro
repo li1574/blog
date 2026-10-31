@@ -12,8 +12,6 @@ type Props = {
   description?: string;
   ogImage?: string;
   canonicalURL?: string;
-  /** 宽屏时放宽内容区（文章页用，手机不受影响） */
-  wide?: boolean;
 };
 
 const { site } = config;
@@ -23,7 +21,6 @@ const {
   description = site.description,
   ogImage = resolveDefaultOgImagePath(config),
   canonicalURL = new URL(Astro.url.pathname, Astro.site).href,
-  wide = false,
 } = Astro.props;
 
 const socialImageURL = new URL(ogImage, Astro.site ?? Astro.url);
@@ -121,7 +118,6 @@ const rssHref = getRelativeLocaleUrl(
   </head>
   <body
     class="bg-background font-app text-foreground selection:bg-accent/75 selection:text-accent-foreground flex min-h-svh flex-col"
-    data-wide={wide ? "1" : undefined}
   >
     <slot />
     <script>

@@ -23,7 +23,7 @@
 }
 
 @utility max-w-app {
-  @apply max-w-3xl;
+  @apply max-w-3xl lg:max-w-[68rem];
 }
 
 @utility app-layout {
@@ -36,11 +36,4 @@
 
 :target {
   scroll-margin-block: 1rem;
-}
-
-/* 文章页：宽屏放宽内容区，给右侧留言栏留空间。手机端不变。 */
-@media (min-width: 64rem) {
-  body[data-wide="1"] .app-layout {
-    max-width: 68rem;
-  }
 }

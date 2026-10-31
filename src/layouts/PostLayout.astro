@@ -9,12 +9,11 @@ type Props = {
   canonicalURL?: string;
   pubDatetime?: Date;
   modDatetime?: Date | null;
-  wide?: boolean;
 };
 
 const { site } = config;
 
-const { title, description, ogImage, canonicalURL, pubDatetime, modDatetime, wide } =
+const { title, description, ogImage, canonicalURL, pubDatetime, modDatetime } =
   Astro.props;
 
 const structuredData = {
@@ -34,7 +33,7 @@ const structuredData = {
 };
 ---
 
-<Layout {title} {description} {ogImage} {canonicalURL} {wide}>
+<Layout {title} {description} {ogImage} {canonicalURL}>
   <Fragment slot="head">
     <!-- Override og:type for article pages -->
     <meta property="og:type" content="article" />
