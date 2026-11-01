@@ -155,6 +155,13 @@
 
         <div class="field">
           <label for="body">正文（Markdown）</label>
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px">
+            <button type="button" id="insertImage" style="padding: 4px 10px; font-size: 13px">
+              插入图片
+            </button>
+            <input type="file" id="inlineImage" accept="image/*" multiple hidden />
+            <span class="hint" style="margin: 0">也可以直接粘贴或把图片拖进正文框</span>
+          </div>
           <textarea id="body" placeholder="正文从 ## 二级标题开始写，不要用 # （标题已在 frontmatter 里）&#10;&#10;## 小标题&#10;&#10;正文段落……"></textarea>
           <div class="hint">回车即换行，空一行分段 · Ctrl / Cmd + S 直接发布</div>
         </div>
@@ -222,6 +229,7 @@
         deletePost: $("deletePost"), files: $("files"),
         photoGrid: $("photoGrid"), photoStatus: $("photoStatus"),
         audioFiles: $("audioFiles"), musicList: $("musicList"), musicStatus: $("musicStatus"),
+        body: $("body"), inlineImage: $("inlineImage"),
       };
 
       let dirty = false;
@@ -507,6 +515,58 @@
         );
       }
 
+      /** 在光标处插入内容，前后补空行，保证 Markdown 块级正确 */
+      function insertAtCursor(text) {
+        const ta = els.body;
+        if (!ta) return;
+        const start = ta.selectionStart ?? ta.value.length;
+        const end = ta.selectionEnd ?? start;
+        const before = ta.value.slice(0, start);
+        const after = ta.value.slice(end);
+
+        let prefix = "";
+        if (before && !before.endsWith("\n\n")) prefix = before.endsWith("\n") ? "\n" : "\n\n";
+        const suffix = after && !after.startsWith("\n\n") ? "\n\n" : "";
+
+        const inserted = prefix + text + suffix;
+        ta.value = before + inserted + after;
+
+        const pos = start + inserted.length;
+        ta.focus();
+        ta.setSelectionRange(pos, pos);
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+
+      /** 压缩 → 上传 → 在光标处插入 Markdown 图片 */
+      async function insertImages(files) {
+        if (!els.pw.value) return setPhotoStatus("先填发文口令。", "err");
+        const list = [...files].filter(f => f && f.type.startsWith("image/"));
+        if (!list.length) return;
+
+        for (let i = 0; i < list.length; i++) {
+          const file = list[i];
+          setPhotoStatus(`插入图片 ${i + 1}/${list.length}：${file.name || "剪贴板图片"}`);
+          try {
+            const { blob, name } = await compressImage(file);
+            const data = await blobToBase64(blob);
+            const res = await api("/api/upload", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ name, data }),
+            });
+            const alt = String(name).replace(/\.[^.]+$/, "");
+            insertAtCursor(`![${alt}](${res.url || "/img/" + encodeURIComponent(name)})`);
+            setPhotoStatus(`已插入 ${name}`, "ok");
+          } catch (error) {
+            setPhotoStatus(`第 ${i + 1} 张失败：${error.message}`, "err");
+            return;
+          }
+        }
+
+        if (els.inlineImage) els.inlineImage.value = "";
+        await loadPhotos();
+      }
+
       async function removePhoto(name) {
         if (!confirm(`确定删除图片 ${name}？\n\n引用它的文章会变成坏图。`)) return;
         setPhotoStatus("正在删除…");
@@ -733,6 +793,34 @@
       els.pw.addEventListener("change", () => { loadList(); loadPhotos(); loadMusic(); });
       els.pw.addEventListener("blur", () => { loadList(); loadPhotos(); loadMusic(); });
       els.files.addEventListener("change", e => uploadFiles(e.target.files));
+
+      // 正文插图：按钮 / 粘贴 / 拖拽
+      const insertBtn = $("insertImage");
+      if (insertBtn) insertBtn.addEventListener("click", () => els.inlineImage.click());
+      if (els.inlineImage) {
+        els.inlineImage.addEventListener("change", e => insertImages(e.target.files));
+      }
+
+      if (els.body) {
+        els.body.addEventListener("paste", e => {
+          const items = [...(e.clipboardData?.items || [])].filter(it => it.type.startsWith("image/"));
+          if (!items.length) return;
+          e.preventDefault();
+          const files = items.map(it => it.getAsFile()).filter(Boolean);
+          void insertImages(files);
+        });
+
+        els.body.addEventListener("dragover", e => {
+          if (e.dataTransfer?.types?.includes("Files")) e.preventDefault();
+        });
+
+        els.body.addEventListener("drop", e => {
+          const files = [...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith("image/"));
+          if (!files.length) return;
+          e.preventDefault();
+          void insertImages(files);
+        });
+      }
       els.audioFiles.addEventListener("change", e => uploadAudio(e.target.files));
       els.deletePost.addEventListener("click", removePost);
       els.featuredList.addEventListener("change", e => {
