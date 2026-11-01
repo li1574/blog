@@ -37,3 +37,8 @@
 :target {
   scroll-margin-block: 1rem;
 }
+
+/* 全局播放条出现时，给底部留空间，避免盖住页脚 */
+body.has-player {
+  padding-bottom: 5.5rem;
+}

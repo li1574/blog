@@ -1,0 +1,155 @@
+---
+// 全局播放条：所有页面都渲染，默认隐藏。
+// 真正的播放逻辑在 music 页的脚本里（模块常驻，切页不中断）。
+---
+
+<div
+  id="player-bar"
+  class="border-border bg-background/95 fixed inset-x-0 bottom-0 z-40 hidden border-t backdrop-blur"
+>
+  <div class="mx-auto flex max-w-[68rem] items-center gap-3 px-4 py-3">
+    <button
+      id="prev"
+      type="button"
+      class="text-muted-foreground hover:text-accent flex size-9 items-center justify-center rounded-md"
+      aria-label="上一首"
+    >
+      <svg viewBox="0 0 24 24" class="size-4" fill="currentColor" aria-hidden="true">
+        <path d="M6 5h2v14H6zM20 5v14L9 12z"></path>
+      </svg>
+    </button>
+
+    <button
+      id="play"
+      type="button"
+      class="bg-accent text-accent-foreground flex size-10 items-center justify-center rounded-full"
+      aria-label="播放"
+    >
+      <svg id="icon-play" viewBox="0 0 24 24" class="size-4" fill="currentColor" aria-hidden="true">
+        <path d="M8 5v14l11-7z"></path>
+      </svg>
+      <svg
+        id="icon-pause"
+        viewBox="0 0 24 24"
+        class="hidden size-4"
+        fill="currentColor"
+        aria-hidden="true"
+      >
+        <path d="M7 5h4v14H7zM13 5h4v14h-4z"></path>
+      </svg>
+    </button>
+
+    <button
+      id="next"
+      type="button"
+      class="text-muted-foreground hover:text-accent flex size-9 items-center justify-center rounded-md"
+      aria-label="下一首"
+    >
+      <svg viewBox="0 0 24 24" class="size-4" fill="currentColor" aria-hidden="true">
+        <path d="M16 5h2v14h-2zM4 5v14l11-7z"></path>
+      </svg>
+    </button>
+
+    <button
+      id="like"
+      type="button"
+      class="text-muted-foreground hover:text-accent size-9 items-center justify-center rounded-md"
+      style="display: none"
+      aria-label="喜欢"
+      title="喜欢"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        class="size-4"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path
+          d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 00-7.8 7.8l1 1.1L12 21.2l7.8-7.7 1-1.1a5.5 5.5 0 000-7.8z"
+        ></path>
+      </svg>
+    </button>
+
+    <button
+      id="mode"
+      type="button"
+      class="text-muted-foreground hover:text-accent flex size-9 items-center justify-center rounded-md"
+      aria-label="顺序播放"
+      title="顺序播放"
+    >
+      <svg
+        id="icon-order"
+        viewBox="0 0 24 24"
+        class="size-4"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        aria-hidden="true"
+      >
+        <path d="M4 6h16M4 12h16M4 18h10"></path>
+      </svg>
+      <svg
+        id="icon-shuffle"
+        viewBox="0 0 24 24"
+        class="hidden size-4"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"></path>
+      </svg>
+      <svg
+        id="icon-repeat"
+        viewBox="0 0 24 24"
+        class="hidden size-4"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M17 2l4 4-4 4"></path>
+        <path d="M3 11V9a4 4 0 014-4h14"></path>
+        <path d="M7 22l-4-4 4-4"></path>
+        <path d="M21 13v2a4 4 0 01-4 4H3"></path>
+        <text x="12" y="15" font-size="8" text-anchor="middle" fill="currentColor" stroke="none">1</text>
+      </svg>
+    </button>
+
+    <div class="min-w-0 flex-1">
+      <div id="now-title" class="truncate text-sm font-medium"></div>
+      <div class="text-muted-foreground flex items-center gap-2 text-xs">
+        <span id="cur-time" class="tabular-nums">0:00</span>
+        <input
+          id="seek"
+          type="range"
+          min="0"
+          max="1000"
+          value="0"
+          class="accent-accent h-1 flex-1 cursor-pointer"
+          aria-label="播放进度"
+        />
+        <span id="dur-time" class="tabular-nums">0:00</span>
+      </div>
+    </div>
+
+    <input
+      id="volume"
+      type="range"
+      min="0"
+      max="100"
+      value="100"
+      class="accent-accent hidden h-1 w-20 cursor-pointer sm:block"
+      aria-label="音量"
+    />
+  </div>
+</div>

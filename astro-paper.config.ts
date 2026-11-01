@@ -19,7 +19,7 @@ export default defineAstroPaperConfig({
   },
   features: {
     lightAndDarkMode: true,
-    dynamicOgImage: false,
+    dynamicOgImage: true,
     showArchives: true,
     showBackButton: true,
     // 「编辑此页」对访客没意义（只能 fork 提 PR），自己也用 /admin，关掉
