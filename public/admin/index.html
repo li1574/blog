@@ -215,6 +215,19 @@
         <div id="musicList" class="flist"></div>
         <div class="status" id="musicStatus"></div>
       </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>留言</h2>
+          <span class="hint">置顶的排在最前面</span>
+        </div>
+        <div class="field" style="display: flex; gap: 8px; align-items: center">
+          <button type="button" id="loadComments">刷新留言</button>
+          <span class="hint" style="margin: 0">按文章分组显示，删除不可恢复</span>
+        </div>
+        <div id="commentList" style="display: flex; flex-direction: column; gap: 8px"></div>
+        <div class="status" id="commentStatus"></div>
+      </div>
     </div>
 
     <script>
@@ -230,6 +243,7 @@
         photoGrid: $("photoGrid"), photoStatus: $("photoStatus"),
         audioFiles: $("audioFiles"), musicList: $("musicList"), musicStatus: $("musicStatus"),
         body: $("body"), inlineImage: $("inlineImage"),
+        commentList: $("commentList"), commentStatus: $("commentStatus"),
       };
 
       let dirty = false;
@@ -567,6 +581,98 @@
         await loadPhotos();
       }
 
+      function setCommentStatus(text, kind) {
+        els.commentStatus.textContent = text;
+        els.commentStatus.className = "status" + (kind ? " " + kind : "");
+      }
+
+      function postSlugOf(path) {
+        return String(path || "").split("/").pop().replace(/\.md$/, "");
+      }
+
+      function postTitleOf(slug) {
+        const hit = allPosts.find(p => postSlugOf(p.path) === slug || String(p.name || "").replace(/\.md$/, "") === slug);
+        return hit ? hit.title || hit.name || slug : slug;
+      }
+
+      async function loadCommentsAdmin() {
+        if (!els.pw.value) return setCommentStatus("先填发文口令。", "err");
+        setCommentStatus("读取中…");
+        try {
+          const { threads } = await api("/api/comments/all");
+          const rows = [];
+          for (const t of threads || []) {
+            for (const c of t.comments || []) rows.push({ slug: t.slug, c });
+          }
+          rows.sort((a, b) => {
+            const pin = (b.c.pinned ? 1 : 0) - (a.c.pinned ? 1 : 0);
+            return pin !== 0 ? pin : String(b.c.at).localeCompare(String(a.c.at));
+          });
+
+          if (!rows.length) {
+            els.commentList.innerHTML = '<div class="hint">还没有留言。</div>';
+            setCommentStatus("共 0 条", "ok");
+            return;
+          }
+
+          els.commentList.innerHTML = rows
+            .map(r => `
+              <div style="border:1px solid var(--border,#ddd);border-radius:6px;padding:8px 10px">
+                <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+                  <div style="min-width:0">
+                    <div><strong>${esc(r.c.name)}</strong>
+                      <span class="hint" style="margin-left:6px">${esc(postTitleOf(r.slug))} · ${new Date(r.c.at).toLocaleString("zh-CN")}</span>
+                      ${r.c.pinned ? '<span class="hint" style="color:#2563eb;margin-left:6px">已置顶</span>' : ""}
+                    </div>
+                    <div style="margin-top:4px;white-space:pre-wrap;word-break:break-word">${esc(r.c.text)}</div>
+                  </div>
+                  <div style="display:flex;gap:6px;flex-shrink:0">
+                    <button type="button" data-pin="${esc(r.c.id)}" data-slug="${esc(r.slug)}" data-pinned="${r.c.pinned ? 1 : 0}" style="padding:2px 8px;font-size:12px">
+                      ${r.c.pinned ? "取消置顶" : "置顶"}
+                    </button>
+                    <button type="button" class="danger" data-del="${esc(r.c.id)}" data-slug="${esc(r.slug)}" style="padding:2px 8px;font-size:12px">
+                      删除
+                    </button>
+                  </div>
+                </div>
+              </div>`)
+            .join("");
+
+          setCommentStatus(`共 ${rows.length} 条`, "ok");
+        } catch (error) {
+          setCommentStatus("读取失败：" + error.message, "err");
+        }
+      }
+
+      async function togglePinComment(slug, id, pinned) {
+        setCommentStatus("处理中…");
+        try {
+          await api("/api/comments", {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ slug, id, pinned: !pinned }),
+          });
+          await loadCommentsAdmin();
+          setCommentStatus(pinned ? "已取消置顶" : "已置顶", "ok");
+        } catch (error) {
+          setCommentStatus("操作失败：" + error.message, "err");
+        }
+      }
+
+      async function deleteCommentAdmin(slug, id) {
+        if (!confirm("确定删除这条留言？删了就找不回来。")) return;
+        setCommentStatus("删除中…");
+        try {
+          await api(`/api/comments?slug=${encodeURIComponent(slug)}&id=${encodeURIComponent(id)}`, {
+            method: "DELETE",
+          });
+          await loadCommentsAdmin();
+          setCommentStatus("已删除", "ok");
+        } catch (error) {
+          setCommentStatus("删除失败：" + error.message, "err");
+        }
+      }
+
       async function removePhoto(name) {
         if (!confirm(`确定删除图片 ${name}？\n\n引用它的文章会变成坏图。`)) return;
         setPhotoStatus("正在删除…");
@@ -795,6 +901,21 @@
       els.files.addEventListener("change", e => uploadFiles(e.target.files));
 
       // 正文插图：按钮 / 粘贴 / 拖拽
+      const loadCommentsBtn = $("loadComments");
+      if (loadCommentsBtn) loadCommentsBtn.addEventListener("click", () => void loadCommentsAdmin());
+
+      if (els.commentList) {
+        els.commentList.addEventListener("click", event => {
+          const pinBtn = event.target.closest("[data-pin]");
+          if (pinBtn) {
+            void togglePinComment(pinBtn.dataset.slug, pinBtn.dataset.pin, pinBtn.dataset.pinned === "1");
+            return;
+          }
+          const delBtn = event.target.closest("[data-del]");
+          if (delBtn) void deleteCommentAdmin(delBtn.dataset.slug, delBtn.dataset.del);
+        });
+      }
+
       const insertBtn = $("insertImage");
       if (insertBtn) insertBtn.addEventListener("click", () => els.inlineImage.click());
       if (els.inlineImage) {

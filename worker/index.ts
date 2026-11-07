@@ -1105,7 +1105,7 @@ async function handleNetease(url: URL, request: Request): Promise<Response> {
 const COMMENT_BRANCH = "comments";
 const COMMENT_DIR = "comments";
 
-type Comment = { id: string; name: string; text: string; at: string };
+type Comment = { id: string; name: string; text: string; at: string; pinned?: boolean };
 
 /** 每个 IP 两次留言的最小间隔 */
 const COMMENT_INTERVAL_MS = 15000;
@@ -1194,10 +1194,10 @@ function cleanSlug(raw: string): string | null {
 
 async function handleComments(env: Env, url: URL, request: Request): Promise<Response> {
   // GET/DELETE 从 query 取，POST 从 body 取
-  let payload: { name?: string; text?: string; slug?: string } = {};
-  if (request.method === "POST") {
+  let payload: { name?: string; text?: string; slug?: string; id?: string; pinned?: boolean } = {};
+  if (request.method === "POST" || request.method === "PATCH") {
     try {
-      payload = (await request.json()) as { name?: string; text?: string; slug?: string };
+      payload = (await request.json()) as typeof payload;
     } catch {
       return json({ error: "请求格式不对" }, 400);
     }
@@ -1255,6 +1255,27 @@ async function handleComments(env: Env, url: URL, request: Request): Promise<Res
     return json({ error: "刚好有人同时留言，再发一次" }, 409);
   }
 
+  if (request.method === "PATCH") {
+    const password = request.headers.get("x-admin-password") ?? "";
+    if (password !== env.ADMIN_PASSWORD) return json({ error: "口令不对" }, 401);
+
+    const id = String(payload.id ?? "");
+    if (!id) return json({ error: "缺少 id" }, 400);
+
+    try {
+      const { list, sha } = await readCommentFile(env, slug);
+      const target = list.find(c => c.id === id);
+      if (!target) return json({ error: "没找到这条留言" }, 404);
+
+      target.pinned = Boolean(payload.pinned);
+      const res = await saveCommentFile(env, slug, list, sha);
+      if (!res.ok) return json({ error: `保存失败：GitHub ${res.status}` }, 502);
+      return json({ ok: true, pinned: target.pinned });
+    } catch (error) {
+      return json({ error: (error as Error).message }, 502);
+    }
+  }
+
   if (request.method === "DELETE") {
     const password = request.headers.get("x-admin-password") ?? "";
     if (password !== env.ADMIN_PASSWORD) return json({ error: "口令不对" }, 401);
@@ -1275,6 +1296,40 @@ async function handleComments(env: Env, url: URL, request: Request): Promise<Res
   }
 
   return json({ error: "Not Found" }, 404);
+}
+
+/** 后台用：读出所有文章的留言 */
+async function handleCommentsAll(env: Env, request: Request): Promise<Response> {
+  const password = request.headers.get("x-admin-password") ?? "";
+  if (password !== env.ADMIN_PASSWORD) return json({ error: "口令不对" }, 401);
+  if (!env.GITHUB_TOKEN) return json({ error: "服务端未配置令牌" }, 500);
+
+  try {
+    const res = await fetch(
+      `${GH_API}/repos/${env.GITHUB_REPO}/contents/${COMMENT_DIR}?ref=${COMMENT_BRANCH}`,
+      { headers: ghHeaders(env) }
+    );
+    if (res.status === 404) return json({ threads: [] });
+    if (!res.ok) return json({ error: `读取失败：GitHub ${res.status}` }, 502);
+
+    const files = (await res.json()) as Array<{ name: string }>;
+    const threads: Array<{ slug: string; comments: Comment[] }> = [];
+
+    for (const file of files) {
+      if (!file.name.endsWith(".json")) continue;
+      const slug = file.name.slice(0, -5);
+      try {
+        const { list } = await readCommentFile(env, slug);
+        if (list.length) threads.push({ slug, comments: list });
+      } catch {
+        // 单个文件坏了不影响其他
+      }
+    }
+
+    return json({ threads });
+  } catch (error) {
+    return json({ error: (error as Error).message }, 502);
+  }
 }
 
 export default {
@@ -1319,6 +1374,9 @@ export default {
     }
 
     // 留言：公开读写（写有频率限制），存在 comments 分支
+    if (url.pathname === "/api/comments/all" && request.method === "GET") {
+      return await handleCommentsAll(env, request);
+    }
     if (url.pathname === "/api/comments") {
       if (!env.GITHUB_TOKEN) return json({ error: "服务端未配置令牌" }, 500);
       return await handleComments(env, url, request);

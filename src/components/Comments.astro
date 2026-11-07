@@ -54,9 +54,20 @@ const { slug } = Astro.props;
     return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
-  function render(list: Array<{ id: string; name: string; text: string; at: string }>, box: HTMLElement) {
+  function render(
+    list: Array<{ id: string; name: string; text: string; at: string; pinned?: boolean }>,
+    box: HTMLElement
+  ) {
     box.innerHTML = "";
-    if (!list.length) {
+
+    // 置顶的排前面，其余按时间正序
+    const ordered = [...list].sort((a, b) => {
+      const pin = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+      if (pin !== 0) return pin;
+      return String(a.at).localeCompare(String(b.at));
+    });
+
+    if (!ordered.length) {
       const empty = document.createElement("li");
       empty.className = "text-muted-foreground py-3 text-xs";
       empty.textContent = "还没有留言，来占个位。";
@@ -64,7 +75,7 @@ const { slug } = Astro.props;
       return;
     }
 
-    for (const item of list) {
+    for (const item of ordered) {
       const li = document.createElement("li");
       li.className = "py-2.5";
 
@@ -79,11 +90,19 @@ const { slug } = Astro.props;
       time.className = "text-muted-foreground shrink-0 text-xs";
       time.textContent = fmtTime(item.at);
 
+      head.append(name, time);
+
+      if (item.pinned) {
+        const badge = document.createElement("span");
+        badge.className = "text-accent shrink-0 text-[10px] leading-none";
+        badge.textContent = "置顶";
+        head.appendChild(badge);
+      }
+
       const text = document.createElement("p");
       text.className = "text-sm break-words whitespace-pre-wrap";
       text.textContent = item.text;
 
-      head.append(name, time);
       li.append(head, text);
       box.appendChild(li);
     }
